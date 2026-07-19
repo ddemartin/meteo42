@@ -211,6 +211,22 @@ def initialize_database(connection: sqlite3.Connection) -> None:
         """
     )
 
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS station_metadata (
+            station_id          TEXT PRIMARY KEY,
+            codice_stazione     INTEGER,
+            nome_stazione       TEXT NOT NULL,
+            latitudine          REAL,
+            longitudine         REAL,
+            quota               REAL,
+            provincia           TEXT,
+            gestore             TEXT,
+            updated_at          TEXT NOT NULL
+        )
+        """
+    )
+
     connection.commit()
 
 

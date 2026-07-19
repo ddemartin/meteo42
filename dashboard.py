@@ -82,10 +82,20 @@ def get_stations_from_db():
     conn = get_db_connection()
     query = """
         SELECT
-            station_id,
-            COALESCE(configured_name, api_name, station_id) AS station_name
-        FROM stations
-        ORDER BY station_id
+            s.station_id,
+            COALESCE(
+                m.nome_stazione,
+                s.configured_name,
+                s.api_name,
+                s.station_id
+            ) AS station_name,
+            m.provincia,
+            m.quota
+        FROM stations s
+        LEFT JOIN station_metadata m
+            ON m.station_id = s.station_id
+        ORDER BY
+            COALESCE(m.nome_stazione, s.configured_name, s.api_name, s.station_id)
     """
     return pd.read_sql_query(query, conn)
 
@@ -110,12 +120,16 @@ with tab1:
         )
 
     stations_df = get_stations_from_db()
-    stations = ["Tutte"] + stations_df["station_id"].tolist()
+    stations_dict = {
+        row["station_name"]: row["station_id"]
+        for _, row in stations_df.iterrows()
+    }
+    station_names = ["Tutte"] + list(stations_dict.keys())
 
     with col2:
-        selected_station = st.selectbox(
+        selected_station_name = st.selectbox(
             "Stazione",
-            stations,
+            station_names,
         )
 
     with col3:
@@ -130,7 +144,11 @@ with tab1:
             var_types,
         )
 
-    station_id = None if selected_station == "Tutte" else selected_station
+    station_id = (
+        None
+        if selected_station_name == "Tutte"
+        else stations_dict[selected_station_name]
+    )
     variable_type = (
         None if selected_var == "Tutte" else selected_var
     )
@@ -251,11 +269,26 @@ with tab3:
             key="chart_days",
         )
         stations_df = get_stations_from_db()
-        chart_stations = st.multiselect(
-            "Stazioni",
-            stations_df["station_id"].tolist(),
-            default=stations_df["station_id"].head(3).tolist(),
+        stations_dict = {
+            row["station_name"]: row["station_id"]
+            for _, row in stations_df.iterrows()
+        }
+        station_names_list = list(stations_dict.keys())
+        default_stations = (
+            station_names_list[:3]
+            if len(station_names_list) >= 3
+            else station_names_list
         )
+
+        chart_station_names = st.multiselect(
+            "Stazioni",
+            station_names_list,
+            default=default_stations,
+        )
+
+    chart_stations = [
+        stations_dict[name] for name in chart_station_names
+    ]
 
     if chart_stations:
         df = get_observations_df(days=chart_days)

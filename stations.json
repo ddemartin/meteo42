@@ -24,6 +24,21 @@
       "id": "300000108",
       "name": "Cavallino-Treporti",
       "enabled": true
+    },
+    {
+      "id": "300001123",
+      "name": "Treviso",
+      "enabled": true
+    },
+    {
+      "id": "300000166",
+      "name": "Malga Ciapela",
+      "enabled": true
+    },
+    {
+      "id": "300006342",
+      "name": "Pale di S. Martino",
+      "enabled": true
     }
   ]
 }
