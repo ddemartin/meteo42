@@ -1,0 +1,38 @@
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# Database and data files
+*.sqlite
+*.sqlite3
+*.db
+*.csv
+
+# Logs
+logs/
+*.log
+
+# Raw data
+raw/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Streamlit
+.streamlit/
