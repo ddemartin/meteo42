@@ -1,33 +1,518 @@
 {
   "stations": [
     {
-      "id": "300000154",
-      "name": "Stazione 300000154",
+      "id": "300000069",
+      "name": "Adria - Bellombra",
       "enabled": true
     },
     {
-      "id": "300000150",
-      "name": "Mogliano Veneto",
+      "id": "300000115",
+      "name": "Agna",
       "enabled": true
     },
     {
-      "id": "300005920",
-      "name": "Stazione 300005920",
+      "id": "300001768",
+      "name": "Agno a Ponte Brogliano",
       "enabled": true
     },
     {
-      "id": "300002420",
-      "name": "Stazione 300002420",
+      "id": "300001701",
+      "name": "Agno a Recoaro Terme",
+      "enabled": true
+    },
+    {
+      "id": "300000170",
+      "name": "Agordo",
+      "enabled": true
+    },
+    {
+      "id": "300006582",
+      "name": "Andraz - Cernadoi",
+      "enabled": true
+    },
+    {
+      "id": "300000158",
+      "name": "Arabba",
+      "enabled": true
+    },
+    {
+      "id": "300000077",
+      "name": "Arcole",
+      "enabled": true
+    },
+    {
+      "id": "300000252",
+      "name": "Asiago - aeroporto",
+      "enabled": true
+    },
+    {
+      "id": "300002042",
+      "name": "Astico a Pedescala",
+      "enabled": true
+    },
+    {
+      "id": "300000183",
+      "name": "Auronzo",
+      "enabled": true
+    },
+    {
+      "id": "300000090",
+      "name": "Bagnolo di Po - Pellizzare",
+      "enabled": true
+    },
+    {
+      "id": "300000104",
+      "name": "Balduina (Sant'Urbano)",
+      "enabled": true
+    },
+    {
+      "id": "300000097",
+      "name": "Barbarano Vicentino",
+      "enabled": true
+    },
+    {
+      "id": "300000072",
+      "name": "Bardolino - Calmasino",
+      "enabled": true
+    },
+    {
+      "id": "300000152",
+      "name": "Bassano del Grappa",
+      "enabled": true
+    },
+    {
+      "id": "300001500",
+      "name": "Belluno - aeroporto",
+      "enabled": true
+    },
+    {
+      "id": "300002200",
+      "name": "Bibione",
+      "enabled": true
+    },
+    {
+      "id": "300002040",
+      "name": "Biois a Cencenighe",
+      "enabled": true
+    },
+    {
+      "id": "300000265",
+      "name": "Bosco Chiesanuova",
+      "enabled": true
+    },
+    {
+      "id": "300005820",
+      "name": "Bovolenta",
+      "enabled": true
+    },
+    {
+      "id": "300004120",
+      "name": "Breda di Piave - Via Bovon",
+      "enabled": true
+    },
+    {
+      "id": "300000099",
+      "name": "Breganze",
+      "enabled": true
+    },
+    {
+      "id": "300000100",
+      "name": "Brendola",
+      "enabled": true
+    },
+    {
+      "id": "300000237",
+      "name": "Brustole' (Velo d'Astico)",
+      "enabled": true
+    },
+    {
+      "id": "300000081",
+      "name": "Buttapietra",
+      "enabled": true
+    },
+    {
+      "id": "300000203",
+      "name": "Campagna Lupia - Valle Averto",
+      "enabled": true
+    },
+    {
+      "id": "300000267",
+      "name": "Campodarsego",
+      "enabled": true
+    },
+    {
+      "id": "300001981",
+      "name": "Campomolon",
+      "enabled": true
+    },
+    {
+      "id": "300000250",
+      "name": "Cansiglio - Tramedere",
+      "enabled": true
+    },
+    {
+      "id": "300000164",
+      "name": "Caprile",
+      "enabled": true
+    },
+    {
+      "id": "300002820",
+      "name": "Caprino Veronese - Platano",
+      "enabled": true
+    },
+    {
+      "id": "300000263",
+      "name": "Casamazzagno",
+      "enabled": true
+    },
+    {
+      "id": "300001980",
+      "name": "Casera Coltrondo",
+      "enabled": true
+    },
+    {
+      "id": "300001967",
+      "name": "Casera Doana",
+      "enabled": true
+    },
+    {
+      "id": "300001982",
+      "name": "Casera Palantina",
+      "enabled": true
+    },
+    {
+      "id": "300000195",
+      "name": "Castana",
+      "enabled": true
+    },
+    {
+      "id": "300000047",
+      "name": "Castelfranco Veneto",
+      "enabled": true
+    },
+    {
+      "id": "300000067",
+      "name": "Castelnovo Bariano",
+      "enabled": true
+    },
+    {
+      "id": "300000087",
+      "name": "Castelnuovo del Garda",
       "enabled": true
     },
     {
       "id": "300000108",
-      "name": "Cavallino-Treporti",
+      "name": "Cavallino Treporti",
       "enabled": true
     },
     {
-      "id": "300001123",
-      "name": "Treviso",
+      "id": "300000155",
+      "name": "Cavarzere",
+      "enabled": true
+    },
+    {
+      "id": "300002120",
+      "name": "Chiampo",
+      "enabled": true
+    },
+    {
+      "id": "300005860",
+      "name": "Chioggia (centro)",
+      "enabled": true
+    },
+    {
+      "id": "300000114",
+      "name": "Chioggia - Sant'Anna",
+      "enabled": true
+    },
+    {
+      "id": "300006340",
+      "name": "Cima Dodici",
+      "enabled": true
+    },
+    {
+      "id": "300001961",
+      "name": "Cima Pradazzo",
+      "enabled": true
+    },
+    {
+      "id": "300000054",
+      "name": "Cittadella",
+      "enabled": true
+    },
+    {
+      "id": "300000129",
+      "name": "Codevigo",
+      "enabled": true
+    },
+    {
+      "id": "300000146",
+      "name": "Codevigo - Ca' di Mezzo",
+      "enabled": true
+    },
+    {
+      "id": "300000214",
+      "name": "Col Indes (Tambre)",
+      "enabled": true
+    },
+    {
+      "id": "300001962",
+      "name": "Col dei Baldi",
+      "enabled": true
+    },
+    {
+      "id": "300001141",
+      "name": "Col di Pra'",
+      "enabled": true
+    },
+    {
+      "id": "300001360",
+      "name": "Colognola ai Colli",
+      "enabled": true
+    },
+    {
+      "id": "300000003",
+      "name": "Concadirame (Rovigo)",
+      "enabled": true
+    },
+    {
+      "id": "300000092",
+      "name": "Conegliano",
+      "enabled": true
+    },
+    {
+      "id": "300000199",
+      "name": "Contra' Doppio (Posina)",
+      "enabled": true
+    },
+    {
+      "id": "300000190",
+      "name": "Cordevole di Visdende a Cima Canale",
+      "enabled": true
+    },
+    {
+      "id": "300000258",
+      "name": "Cortina d'Ampezzo - Gilardon",
+      "enabled": true
+    },
+    {
+      "id": "300000262",
+      "name": "Costalta",
+      "enabled": true
+    },
+    {
+      "id": "300000212",
+      "name": "Crespadoro",
+      "enabled": true
+    },
+    {
+      "id": "300001122",
+      "name": "Crespano del Grappa",
+      "enabled": true
+    },
+    {
+      "id": "300005921",
+      "name": "Crosara (Marostica)",
+      "enabled": true
+    },
+    {
+      "id": "300000074",
+      "name": "Dolce'",
+      "enabled": true
+    },
+    {
+      "id": "300002710",
+      "name": "Dolina Campoluzzo (Monte Lozze)",
+      "enabled": true
+    },
+    {
+      "id": "300001062",
+      "name": "Domegge di Cadore",
+      "enabled": true
+    },
+    {
+      "id": "300000110",
+      "name": "Eraclea",
+      "enabled": true
+    },
+    {
+      "id": "300006740",
+      "name": "Eraclea - Torre di Fine",
+      "enabled": true
+    },
+    {
+      "id": "300000095",
+      "name": "Faedo (Cinto Euganeo)",
+      "enabled": true
+    },
+    {
+      "id": "300000254",
+      "name": "Falcade",
+      "enabled": true
+    },
+    {
+      "id": "300000178",
+      "name": "Faloria",
+      "enabled": true
+    },
+    {
+      "id": "300000140",
+      "name": "Farra di Soligo",
+      "enabled": true
+    },
+    {
+      "id": "300002420",
+      "name": "Favaro Veneto",
+      "enabled": true
+    },
+    {
+      "id": "300001966",
+      "name": "Faverghera",
+      "enabled": true
+    },
+    {
+      "id": "300000251",
+      "name": "Feltre",
+      "enabled": true
+    },
+    {
+      "id": "300005800",
+      "name": "Fener",
+      "enabled": true
+    },
+    {
+      "id": "300004060",
+      "name": "Follina",
+      "enabled": true
+    },
+    {
+      "id": "300000186",
+      "name": "Forno di Zoldo - Campo",
+      "enabled": true
+    },
+    {
+      "id": "300005900",
+      "name": "Fortogna (Longarone)",
+      "enabled": true
+    },
+    {
+      "id": "300000111",
+      "name": "Fossalta di Portogruaro",
+      "enabled": true
+    },
+    {
+      "id": "300000070",
+      "name": "Frassinelle Polesine",
+      "enabled": true
+    },
+    {
+      "id": "300000136",
+      "name": "Gaiarine",
+      "enabled": true
+    },
+    {
+      "id": "300001800",
+      "name": "Gallio",
+      "enabled": true
+    },
+    {
+      "id": "300001540",
+      "name": "Galzignano - Ca' Demia",
+      "enabled": true
+    },
+    {
+      "id": "300000020",
+      "name": "Gares",
+      "enabled": true
+    },
+    {
+      "id": "300000131",
+      "name": "Grantorto",
+      "enabled": true
+    },
+    {
+      "id": "300000082",
+      "name": "Grezzana",
+      "enabled": true
+    },
+    {
+      "id": "300004460",
+      "name": "Grumolo delle Abbadesse",
+      "enabled": true
+    },
+    {
+      "id": "300001734",
+      "name": "Gua' a Cologna Veneta",
+      "enabled": true
+    },
+    {
+      "id": "300001770",
+      "name": "Gua' a Ponte Gua'",
+      "enabled": true
+    },
+    {
+      "id": "300000080",
+      "name": "Illasi",
+      "enabled": true
+    },
+    {
+      "id": "300005861",
+      "name": "Isola Vicentina",
+      "enabled": true
+    },
+    {
+      "id": "300005880",
+      "name": "Jesolo - Cortellazzo",
+      "enabled": true
+    },
+    {
+      "id": "300005840",
+      "name": "La Guarda (Cesiomaggiore)",
+      "enabled": true
+    },
+    {
+      "id": "300001801",
+      "name": "La Secca",
+      "enabled": true
+    },
+    {
+      "id": "300000243",
+      "name": "Lamon - Sala",
+      "enabled": true
+    },
+    {
+      "id": "300000055",
+      "name": "Legnaro",
+      "enabled": true
+    },
+    {
+      "id": "300000242",
+      "name": "Longarone",
+      "enabled": true
+    },
+    {
+      "id": "300000050",
+      "name": "Lonigo",
+      "enabled": true
+    },
+    {
+      "id": "300000112",
+      "name": "Lugugnana (Portogruaro)",
+      "enabled": true
+    },
+    {
+      "id": "300000075",
+      "name": "Lusia",
+      "enabled": true
+    },
+    {
+      "id": "300000234",
+      "name": "Lusiana",
+      "enabled": true
+    },
+    {
+      "id": "300000189",
+      "name": "Malga Campobon (San Pietro di Cadore)",
       "enabled": true
     },
     {
@@ -36,8 +521,598 @@
       "enabled": true
     },
     {
+      "id": "300001983",
+      "name": "Malga Larici",
+      "enabled": true
+    },
+    {
+      "id": "300001968",
+      "name": "Malga Losch",
+      "enabled": true
+    },
+    {
+      "id": "300000094",
+      "name": "Malo",
+      "enabled": true
+    },
+    {
+      "id": "300000078",
+      "name": "Marano di Valpolicella",
+      "enabled": true
+    },
+    {
+      "id": "300005920",
+      "name": "Marcon loc. Zuccarello",
+      "enabled": true
+    },
+    {
+      "id": "300001061",
+      "name": "Marmolada - Punta Rocca",
+      "enabled": true
+    },
+    {
+      "id": "300000142",
+      "name": "Maser",
+      "enabled": true
+    },
+    {
+      "id": "300000103",
+      "name": "Masi",
+      "enabled": true
+    },
+    {
+      "id": "300000113",
+      "name": "Mira",
+      "enabled": true
+    },
+    {
+      "id": "300000259",
+      "name": "Misurina",
+      "enabled": true
+    },
+    {
+      "id": "300000150",
+      "name": "Mogliano Veneto",
+      "enabled": true
+    },
+    {
+      "id": "300000238",
+      "name": "Molini (Laghi)",
+      "enabled": true
+    },
+    {
+      "id": "300000051",
+      "name": "Montagnana",
+      "enabled": true
+    },
+    {
+      "id": "300000194",
+      "name": "Monte Avena",
+      "enabled": true
+    },
+    {
+      "id": "300001965",
+      "name": "Monte Baldo",
+      "enabled": true
+    },
+    {
+      "id": "300000175",
+      "name": "Monte Cesen",
+      "enabled": true
+    },
+    {
+      "id": "300004880",
+      "name": "Monte Cherz",
+      "enabled": true
+    },
+    {
+      "id": "300000144",
+      "name": "Monte Grande (Teolo)",
+      "enabled": true
+    },
+    {
+      "id": "300001969",
+      "name": "Monte Grappa",
+      "enabled": true
+    },
+    {
+      "id": "300001964",
+      "name": "Monte Lisser",
+      "enabled": true
+    },
+    {
+      "id": "300001972",
+      "name": "Monte Piana",
+      "enabled": true
+    },
+    {
+      "id": "300006341",
+      "name": "Monte Rite",
+      "enabled": true
+    },
+    {
+      "id": "300000207",
+      "name": "Monte Summano",
+      "enabled": true
+    },
+    {
+      "id": "300001970",
+      "name": "Monte Tomba",
+      "enabled": true
+    },
+    {
+      "id": "300001180",
+      "name": "Monte Verena",
+      "enabled": true
+    },
+    {
+      "id": "300005922",
+      "name": "Montebelluna loc. Contea",
+      "enabled": true
+    },
+    {
+      "id": "300000002",
+      "name": "Montecchio Precalcino",
+      "enabled": true
+    },
+    {
+      "id": "300000101",
+      "name": "Montegalda",
+      "enabled": true
+    },
+    {
+      "id": "300001960",
+      "name": "Monti Alti di Ornella",
+      "enabled": true
+    },
+    {
+      "id": "300001738",
+      "name": "Monticano a Gorgo al Monticano",
+      "enabled": true
+    },
+    {
+      "id": "300005940",
+      "name": "Nervesa della Battaglia",
+      "enabled": true
+    },
+    {
+      "id": "300002560",
+      "name": "Nogarolo di Tarzo",
+      "enabled": true
+    },
+    {
+      "id": "300000109",
+      "name": "Noventa di Piave - Grassaga",
+      "enabled": true
+    },
+    {
+      "id": "300003980",
+      "name": "Ospedaletto Euganeo",
+      "enabled": true
+    },
+    {
+      "id": "300000202",
+      "name": "Padova",
+      "enabled": true
+    },
+    {
       "id": "300006342",
-      "name": "Pale di S. Martino",
+      "name": "Pale di San Martino",
+      "enabled": true
+    },
+    {
+      "id": "300001971",
+      "name": "Passo Campogrosso",
+      "enabled": true
+    },
+    {
+      "id": "300000177",
+      "name": "Passo Falzarego",
+      "enabled": true
+    },
+    {
+      "id": "300001802",
+      "name": "Passo Falzarego nivo (Q1988)",
+      "enabled": true
+    },
+    {
+      "id": "300000213",
+      "name": "Passo Monte Croce Comelico",
+      "enabled": true
+    },
+    {
+      "id": "300000206",
+      "name": "Passo Pordoi",
+      "enabled": true
+    },
+    {
+      "id": "300007061",
+      "name": "Passo Sant'Antonio (nivo)",
+      "enabled": true
+    },
+    {
+      "id": "300000235",
+      "name": "Passo Santa Caterina (Valdagno)",
+      "enabled": true
+    },
+    {
+      "id": "300000244",
+      "name": "Passo Valles",
+      "enabled": true
+    },
+    {
+      "id": "300000239",
+      "name": "Passo Xomo (Posina)",
+      "enabled": true
+    },
+    {
+      "id": "300001140",
+      "name": "Perarolo",
+      "enabled": true
+    },
+    {
+      "id": "300005960",
+      "name": "Peschiera - Dolci",
+      "enabled": true
+    },
+    {
+      "id": "300001120",
+      "name": "Pescul",
+      "enabled": true
+    },
+    {
+      "id": "300005980",
+      "name": "Pettorazza Grimani loc. Botti Barbarighe",
+      "enabled": true
+    },
+    {
+      "id": "300000185",
+      "name": "Pian del Crep (Val di Zoldo)",
+      "enabled": true
+    },
+    {
+      "id": "300000264",
+      "name": "Piana di Marcesina - Rendole",
+      "enabled": true
+    },
+    {
+      "id": "300006780",
+      "name": "Pila - Porto Peschereccio (Porto Tolle)",
+      "enabled": true
+    },
+    {
+      "id": "300000179",
+      "name": "Podestagno (Cortina d'Ampezzo)",
+      "enabled": true
+    },
+    {
+      "id": "300002720",
+      "name": "Ponte Rio Cordon (Selva di Cadore)",
+      "enabled": true
+    },
+    {
+      "id": "300000145",
+      "name": "Ponte di Piave",
+      "enabled": true
+    },
+    {
+      "id": "300000009",
+      "name": "Porto Tolle - Pradon",
+      "enabled": true
+    },
+    {
+      "id": "300000107",
+      "name": "Portogruaro - Lison",
+      "enabled": true
+    },
+    {
+      "id": "300000208",
+      "name": "Pove del Grappa - Costalunga",
+      "enabled": true
+    },
+    {
+      "id": "300001121",
+      "name": "Quero",
+      "enabled": true
+    },
+    {
+      "id": "300001963",
+      "name": "Ra Valles",
+      "enabled": true
+    },
+    {
+      "id": "300000201",
+      "name": "Recoaro Mille",
+      "enabled": true
+    },
+    {
+      "id": "300001774",
+      "name": "Retrone a Vicenza S.Agostino",
+      "enabled": true
+    },
+    {
+      "id": "300000232",
+      "name": "Rifugio la Guardia (Recoaro Terme)",
+      "enabled": true
+    },
+    {
+      "id": "300006583",
+      "name": "Rocca Pietore - Boscoverde",
+      "enabled": true
+    },
+    {
+      "id": "300000137",
+      "name": "Roncade",
+      "enabled": true
+    },
+    {
+      "id": "300000096",
+      "name": "Rosa'",
+      "enabled": true
+    },
+    {
+      "id": "300000056",
+      "name": "Rosolina - Po di Tramontana",
+      "enabled": true
+    },
+    {
+      "id": "300000073",
+      "name": "Roverchiara",
+      "enabled": true
+    },
+    {
+      "id": "300000053",
+      "name": "Salizzole",
+      "enabled": true
+    },
+    {
+      "id": "300000091",
+      "name": "San Bellino",
+      "enabled": true
+    },
+    {
+      "id": "300000331",
+      "name": "San Bortolo",
+      "enabled": true
+    },
+    {
+      "id": "300000197",
+      "name": "San Giovanni Ilarione",
+      "enabled": true
+    },
+    {
+      "id": "300000257",
+      "name": "San Martino d'Alpago",
+      "enabled": true
+    },
+    {
+      "id": "300000079",
+      "name": "San Pietro in Cariano",
+      "enabled": true
+    },
+    {
+      "id": "300000172",
+      "name": "Sant'Andrea (Gosaldo)",
+      "enabled": true
+    },
+    {
+      "id": "300000173",
+      "name": "Sant'Antonio Tortal",
+      "enabled": true
+    },
+    {
+      "id": "300000151",
+      "name": "Sant'Apollinare (Rovigo)",
+      "enabled": true
+    },
+    {
+      "id": "300003280",
+      "name": "Sant'Elena",
+      "enabled": true
+    },
+    {
+      "id": "300001580",
+      "name": "Santa Giustina Bellunese",
+      "enabled": true
+    },
+    {
+      "id": "300000188",
+      "name": "Santo Stefano di Cadore",
+      "enabled": true
+    },
+    {
+      "id": "300000233",
+      "name": "Sappada",
+      "enabled": true
+    },
+    {
+      "id": "300001620",
+      "name": "Sella Ciampigotto",
+      "enabled": true
+    },
+    {
+      "id": "300000256",
+      "name": "Soffranco",
+      "enabled": true
+    },
+    {
+      "id": "300001806",
+      "name": "Solagna Villaggio del sole",
+      "enabled": true
+    },
+    {
+      "id": "300000071",
+      "name": "Sorga'",
+      "enabled": true
+    },
+    {
+      "id": "300001060",
+      "name": "Sospirolo",
+      "enabled": true
+    },
+    {
+      "id": "300005983",
+      "name": "Staro (Valli del Pasubio)",
+      "enabled": true
+    },
+    {
+      "id": "300005981",
+      "name": "Stra",
+      "enabled": true
+    },
+    {
+      "id": "300000127",
+      "name": "Teolo",
+      "enabled": true
+    },
+    {
+      "id": "300005982",
+      "name": "Tonezza del Cimone",
+      "enabled": true
+    },
+    {
+      "id": "300000230",
+      "name": "Torch",
+      "enabled": true
+    },
+    {
+      "id": "300006343",
+      "name": "Tre Cime di Lavaredo",
+      "enabled": true
+    },
+    {
+      "id": "300000076",
+      "name": "Trebaseleghe",
+      "enabled": true
+    },
+    {
+      "id": "300000147",
+      "name": "Trecenta",
+      "enabled": true
+    },
+    {
+      "id": "300001123",
+      "name": "Treviso",
+      "enabled": true
+    },
+    {
+      "id": "300000006",
+      "name": "Tribano",
+      "enabled": true
+    },
+    {
+      "id": "300000098",
+      "name": "Trissino",
+      "enabled": true
+    },
+    {
+      "id": "300000200",
+      "name": "Turcati (Recoaro Terme)",
+      "enabled": true
+    },
+    {
+      "id": "300006344",
+      "name": "Val Salatis",
+      "enabled": true
+    },
+    {
+      "id": "300007060",
+      "name": "Val Visdende (nivo)",
+      "enabled": true
+    },
+    {
+      "id": "300000205",
+      "name": "Valdagno",
+      "enabled": true
+    },
+    {
+      "id": "300000139",
+      "name": "Valdobbiadene - Bigolino",
+      "enabled": true
+    },
+    {
+      "id": "300001100",
+      "name": "Valeggio sul Mincio",
+      "enabled": true
+    },
+    {
+      "id": "300000255",
+      "name": "Valle di Cadore",
+      "enabled": true
+    },
+    {
+      "id": "300001063",
+      "name": "Valli del Pasubio",
+      "enabled": true
+    },
+    {
+      "id": "300001460",
+      "name": "Valpore (Seren del Grappa)",
+      "enabled": true
+    },
+    {
+      "id": "300001040",
+      "name": "Vangadizza (Legnago)",
+      "enabled": true
+    },
+    {
+      "id": "300000135",
+      "name": "Vazzola - Tezze",
+      "enabled": true
+    },
+    {
+      "id": "300000154",
+      "name": "Venezia - Istituto Cavanis",
+      "enabled": true
+    },
+    {
+      "id": "300006260",
+      "name": "Verona - Santa Caterina",
+      "enabled": true
+    },
+    {
+      "id": "300007062",
+      "name": "Vette Feltrine (nivo)",
+      "enabled": true
+    },
+    {
+      "id": "300002360",
+      "name": "Vicenza - Sant'Agostino",
+      "enabled": true
+    },
+    {
+      "id": "300000068",
+      "name": "Villadose",
+      "enabled": true
+    },
+    {
+      "id": "300000049",
+      "name": "Villafranca di Verona",
+      "enabled": true
+    },
+    {
+      "id": "300000181",
+      "name": "Villanova (Borca di Cadore)",
+      "enabled": true
+    },
+    {
+      "id": "300000138",
+      "name": "Villorba",
+      "enabled": true
+    },
+    {
+      "id": "300000260",
+      "name": "Vittorio Veneto",
+      "enabled": true
+    },
+    {
+      "id": "300000133",
+      "name": "Volpago del Montello",
+      "enabled": true
+    },
+    {
+      "id": "300000134",
+      "name": "Zero Branco",
       "enabled": true
     }
   ]
