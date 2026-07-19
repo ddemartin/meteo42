@@ -1,0 +1,29 @@
+{
+  "stations": [
+    {
+      "id": "300000154",
+      "name": "Stazione 300000154",
+      "enabled": true
+    },
+    {
+      "id": "300000150",
+      "name": "Mogliano Veneto",
+      "enabled": true
+    },
+    {
+      "id": "300005920",
+      "name": "Stazione 300005920",
+      "enabled": true
+    },
+    {
+      "id": "300002420",
+      "name": "Stazione 300002420",
+      "enabled": true
+    },
+    {
+      "id": "300000108",
+      "name": "Cavallino-Treporti",
+      "enabled": true
+    }
+  ]
+}
