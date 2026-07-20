@@ -1,3 +1,4 @@
+import logging
 import os
 import sqlite3
 import json
@@ -7,6 +8,8 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+
+import scrape
 
 DEFAULT_DATABASE_PATH = os.environ.get(
     "ARPAV_DATABASE_PATH", "arpav_meteo.sqlite"
@@ -56,6 +59,55 @@ with st.sidebar:
         st.caption("⚠️ File non trovato")
 
 DATABASE_PATH = Path(st.session_state["database_path"])
+
+
+class StreamlitLogHandler(logging.Handler):
+    def __init__(self, placeholder):
+        super().__init__()
+        self.placeholder = placeholder
+        self.lines: list[str] = []
+
+    def emit(self, record):
+        self.lines.append(self.format(record))
+        self.placeholder.code("\n".join(self.lines[-25:]))
+
+
+def run_scrape(request_delay: float) -> None:
+    log_placeholder = st.empty()
+    handler = StreamlitLogHandler(log_placeholder)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+    )
+    scrape.LOG.addHandler(handler)
+    scrape.LOG.setLevel(logging.INFO)
+
+    try:
+        with st.spinner("Scaricamento in corso..."):
+            scrape.collect_all(
+                config_path=scrape.DEFAULT_CONFIG,
+                database_path=DATABASE_PATH,
+                csv_path=scrape.DEFAULT_CSV,
+                raw_directory=scrape.DEFAULT_RAW_DIRECTORY,
+                request_delay=request_delay,
+            )
+        st.success("Aggiornamento completato")
+    except Exception as exc:
+        st.error(f"Errore durante lo scraping: {exc}")
+    finally:
+        scrape.LOG.removeHandler(handler)
+
+
+with st.sidebar:
+    st.divider()
+    st.write("### Aggiorna Dati")
+    request_delay = st.number_input(
+        "Ritardo tra stazioni (s)",
+        min_value=0.0,
+        value=0.5,
+        step=0.1,
+    )
+    if st.button("Scarica dati ora"):
+        run_scrape(request_delay)
 
 
 def get_db_connection():
