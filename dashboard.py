@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import json
 from pathlib import Path
@@ -7,8 +8,11 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 
-DATABASE_PATH = Path("arpav_meteo.sqlite")
+DEFAULT_DATABASE_PATH = os.environ.get(
+    "ARPAV_DATABASE_PATH", "arpav_meteo.sqlite"
+)
 STATIONS_CONFIG = Path("stations.json")
+DASHBOARD_CONFIG = Path(".dashboard_config.json")
 
 st.set_page_config(
     page_title="ARPAV Dashboard",
@@ -17,6 +21,41 @@ st.set_page_config(
 )
 
 st.title("🌤️ ARPAV Meteo Dashboard")
+
+
+def load_dashboard_config() -> dict:
+    if not DASHBOARD_CONFIG.exists():
+        return {}
+    try:
+        return json.loads(DASHBOARD_CONFIG.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_dashboard_config(config: dict) -> None:
+    DASHBOARD_CONFIG.write_text(
+        json.dumps(config, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+if "database_path" not in st.session_state:
+    st.session_state["database_path"] = load_dashboard_config().get(
+        "database_path", DEFAULT_DATABASE_PATH
+    )
+
+with st.sidebar:
+    st.text_input(
+        "Percorso Database",
+        key="database_path",
+        on_change=lambda: save_dashboard_config(
+            {"database_path": st.session_state["database_path"]}
+        ),
+    )
+    if not Path(st.session_state["database_path"]).exists():
+        st.caption("⚠️ File non trovato")
+
+DATABASE_PATH = Path(st.session_state["database_path"])
 
 
 def get_db_connection():

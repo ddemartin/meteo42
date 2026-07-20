@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import logging
+import os
 import sqlite3
 import sys
 import time
@@ -22,7 +23,9 @@ API_URL = (
 )
 
 DEFAULT_CONFIG = Path("stations.json")
-DEFAULT_DATABASE = Path("arpav_meteo.sqlite")
+DEFAULT_DATABASE = Path(
+    os.environ.get("ARPAV_DATABASE_PATH", "arpav_meteo.sqlite")
+)
 DEFAULT_CSV = Path("arpav_meteo.csv")
 DEFAULT_RAW_DIRECTORY = Path("raw")
 

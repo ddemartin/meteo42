@@ -36,3 +36,6 @@ build/
 
 # Streamlit
 .streamlit/
+
+# Local dashboard runtime config
+.dashboard_config.json

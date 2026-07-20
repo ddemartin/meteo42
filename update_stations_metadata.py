@@ -1,10 +1,13 @@
+import os
 import sqlite3
 import requests
 import logging
 from datetime import datetime
 from pathlib import Path
 
-DATABASE_PATH = Path("arpav_meteo.sqlite")
+DATABASE_PATH = Path(
+    os.environ.get("ARPAV_DATABASE_PATH", "arpav_meteo.sqlite")
+)
 API_URL = "https://api.arpa.veneto.it/REST/v1/meteo_meteogrammi"
 
 LOG = logging.getLogger("meteo_metadata")
