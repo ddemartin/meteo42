@@ -295,7 +295,21 @@ with tab3:
         df = df[df["station_id"].isin(chart_stations)]
 
         if not df.empty:
-            var_types = df["variable_type"].unique()
+            var_priority = [
+                "TARIA2M",
+                "UMID2M",
+                "VVENTO10M",
+                "DVENTO10M",
+                "RADSOL",
+                "PREC",
+            ]
+
+            def var_sort_key(v):
+                if v in var_priority:
+                    return (0, var_priority.index(v))
+                return (1, v)
+
+            var_types = sorted(df["variable_type"].unique(), key=var_sort_key)
 
             for var in var_types:
                 var_df = df[df["variable_type"] == var].copy()
@@ -319,6 +333,54 @@ with tab3:
                         hovermode="x unified",
                         height=400,
                     )
+
+                    if var == "PREC":
+                        year_start = datetime(datetime.now().year, 1, 1)
+                        days_since_year_start = (
+                            datetime.now() - year_start
+                        ).days + 1
+                        prec_year_df = get_observations_df(
+                            days=days_since_year_start,
+                            variable_type="PREC",
+                        )
+                        prec_year_df = prec_year_df[
+                            prec_year_df["station_id"].isin(chart_stations)
+                        ]
+
+                        if not prec_year_df.empty:
+                            prec_year_df = prec_year_df.sort_values(
+                                "observation_at"
+                            )
+                            prec_year_df["cumulata"] = prec_year_df.groupby(
+                                "station_id"
+                            )["value_numeric"].cumsum()
+
+                            for station_id in chart_stations:
+                                station_cum = prec_year_df[
+                                    prec_year_df["station_id"] == station_id
+                                ]
+                                if station_cum.empty:
+                                    continue
+                                station_name = station_cum[
+                                    "station_name"
+                                ].iloc[0]
+                                fig.add_trace(
+                                    go.Scatter(
+                                        x=station_cum["observation_at"],
+                                        y=station_cum["cumulata"],
+                                        name=f"{station_name} (cumulata)",
+                                        yaxis="y2",
+                                        line=dict(dash="dot"),
+                                    )
+                                )
+
+                            fig.update_layout(
+                                yaxis2=dict(
+                                    title="Cumulata annua (mm)",
+                                    overlaying="y",
+                                    side="right",
+                                ),
+                            )
 
                     st.plotly_chart(
                         fig,
