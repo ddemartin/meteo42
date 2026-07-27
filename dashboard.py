@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import sqlite3
 import json
@@ -24,6 +25,81 @@ st.set_page_config(
 )
 
 st.title("🌤️ ARPAV Meteo Dashboard")
+
+VARIABLE_LABELS = {
+    "TARIA2M": "Temperatura aria (2m)",
+    "TARIA5M": "Temperatura aria (5m)",
+    "UMID2M": "Umidità (2m)",
+    "UMID5M": "Umidità (5m)",
+    "VVENTO10M": "Velocità del vento (10m)",
+    "VVENTO5M": "Velocità del vento (5m)",
+    "VVENTO2M": "Velocità del vento (2m)",
+    "DVENTO10M": "Direzione del vento (10m)",
+    "DVENTO5M": "Direzione del vento (5m)",
+    "DVENTO2M": "Direzione del vento (2m)",
+    "RADSOL": "Radiazione solare",
+    "PREC": "Precipitazione",
+    "PRESS": "Pressione atmosferica",
+    "NIVOM": "Altezza neve",
+    "VISIB": "Visibilità",
+    "BFOGL": "Bagnatura fogliare",
+    "TSUOLO": "Temperatura del suolo (superficie)",
+    "TSUOLO-10": "Temperatura del suolo (-10cm)",
+    "TSUOLO-20": "Temperatura del suolo (-20cm)",
+    "TSUOLO-30": "Temperatura del suolo (-30cm)",
+}
+
+SOIL_VARIABLES = ["TSUOLO", "TSUOLO-10", "TSUOLO-20", "TSUOLO-30"]
+SOIL_DEPTH_LABELS = {
+    "TSUOLO": "Superficie",
+    "TSUOLO-10": "-10cm",
+    "TSUOLO-20": "-20cm",
+    "TSUOLO-30": "-30cm",
+}
+SOIL_DEPTH_DASHES = {
+    "TSUOLO": "solid",
+    "TSUOLO-10": "dash",
+    "TSUOLO-20": "dot",
+    "TSUOLO-30": "dashdot",
+}
+WIND_HEIGHTS = ["10M", "5M", "2M"]
+
+VENETO_CAPOLUOGHI = {
+    "Belluno": (46.1400, 12.2170),
+    "Padova": (45.4064, 11.8768),
+    "Rovigo": (45.0705, 11.7905),
+    "Treviso": (45.6669, 12.2433),
+    "Venezia": (45.4408, 12.3155),
+    "Verona": (45.4384, 10.9916),
+    "Vicenza": (45.5455, 11.5354),
+}
+HOME_STATION_HINT = "mogliano veneto"
+
+WIND_COMPASS_LABELS = [
+    "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+    "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
+]
+
+
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    earth_radius_km = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+    a = (
+        math.sin(delta_phi / 2) ** 2
+        + math.cos(p1) * math.cos(p2) * math.sin(delta_lambda / 2) ** 2
+    )
+    return 2 * earth_radius_km * math.asin(math.sqrt(a))
+
+
+def degrees_to_compass(degrees: float) -> str:
+    index = round(degrees / 22.5) % 16
+    return WIND_COMPASS_LABELS[index]
+
+
+def var_label(var: str) -> str:
+    return VARIABLE_LABELS.get(var, var)
 
 
 def load_dashboard_config() -> dict:
@@ -168,6 +244,288 @@ def get_observations_df(
         df["observation_at"] = pd.to_datetime(df["observation_at"])
     return df
 
+def aggregate_observations(
+    observations: pd.DataFrame,
+    frequency: str,
+) -> pd.DataFrame:
+    """Aggregate numeric observations by station and day/month."""
+    required_columns = {
+        "station_name",
+        "observation_at",
+        "value_numeric",
+    }
+    if observations.empty or not required_columns.issubset(observations.columns):
+        return pd.DataFrame(
+            columns=[
+                "period",
+                "station_name",
+                "minimum",
+                "average",
+                "maximum",
+            ]
+        )
+
+    if frequency not in {"daily", "monthly"}:
+        raise ValueError("frequency must be 'daily' or 'monthly'")
+
+    numeric = observations.dropna(
+        subset=["observation_at", "value_numeric"]
+    ).copy()
+    if numeric.empty:
+        return pd.DataFrame(
+            columns=[
+                "period",
+                "station_name",
+                "minimum",
+                "average",
+                "maximum",
+            ]
+        )
+
+    if frequency == "daily":
+        numeric["period"] = numeric["observation_at"].dt.floor("D")
+    else:
+        numeric["period"] = (
+            numeric["observation_at"].dt.to_period("M").dt.to_timestamp()
+        )
+
+    return (
+        numeric.groupby(["period", "station_name"], as_index=False)[
+            "value_numeric"
+        ]
+        .agg(
+            minimum="min",
+            average="mean",
+            maximum="max",
+        )
+        .sort_values(["period", "station_name"])
+    )
+
+
+def build_range_figure(
+    aggregated: pd.DataFrame,
+    title: str,
+    unit: str,
+) -> go.Figure:
+    """Build a min/average/max chart, using one color per station."""
+    fig = go.Figure()
+    station_names = sorted(aggregated["station_name"].unique())
+    colors = px.colors.qualitative.Plotly
+    metric_styles = {
+        "minimum": ("Min", "dot"),
+        "average": ("Media", "solid"),
+        "maximum": ("Max", "dot"),
+    }
+
+    for station_index, station_name in enumerate(station_names):
+        station_df = aggregated[
+            aggregated["station_name"] == station_name
+        ]
+        color = colors[station_index % len(colors)]
+        for metric, (label, dash) in metric_styles.items():
+            fig.add_trace(
+                go.Scatter(
+                    x=station_df["period"],
+                    y=station_df[metric],
+                    name=f"{station_name} - {label}",
+                    mode="lines+markers",
+                    line=dict(color=color, dash=dash),
+                    legendgroup=station_name,
+                )
+            )
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Periodo",
+        yaxis_title=unit or "Valore",
+        hovermode="x unified",
+        height=430,
+        legend_title="Stazione / statistica",
+    )
+    return fig
+
+
+def build_wind_figure(
+    speed_df: pd.DataFrame,
+    direction_df: pd.DataFrame,
+    title: str,
+    unit: str,
+) -> go.Figure:
+    """Bar chart of wind speed with direction arrows sampled every N points."""
+    fig = go.Figure()
+    colors = px.colors.qualitative.Plotly
+    station_names = sorted(speed_df["station_name"].unique())
+
+    for station_index, station_name in enumerate(station_names):
+        color = colors[station_index % len(colors)]
+        s_df = speed_df[
+            speed_df["station_name"] == station_name
+        ].sort_values("observation_at")
+
+        fig.add_trace(
+            go.Bar(
+                x=s_df["observation_at"],
+                y=s_df["value_numeric"],
+                name=station_name,
+                marker_color=color,
+                legendgroup=station_name,
+            )
+        )
+
+        d_df = direction_df[
+            direction_df["station_name"] == station_name
+        ].sort_values("observation_at")
+
+        if d_df.empty:
+            continue
+
+        merged = pd.merge_asof(
+            s_df[["observation_at", "value_numeric"]],
+            d_df[["observation_at", "value_numeric"]].rename(
+                columns={"value_numeric": "direction"}
+            ),
+            on="observation_at",
+            tolerance=pd.Timedelta("30min"),
+            direction="nearest",
+        ).dropna(subset=["direction"])
+
+        if merged.empty:
+            continue
+
+        step = max(1, len(merged) // 24)
+        sampled = merged.iloc[::step]
+
+        fig.add_trace(
+            go.Scatter(
+                x=sampled["observation_at"],
+                y=sampled["value_numeric"],
+                mode="markers",
+                marker=dict(
+                    symbol="arrow",
+                    size=13,
+                    angle=sampled["direction"],
+                    color=color,
+                    line=dict(width=1, color="rgba(0,0,0,0.5)"),
+                ),
+                name=f"{station_name} - direzione",
+                legendgroup=station_name,
+                showlegend=False,
+                hovertemplate="Direzione: %{customdata:.0f}°<extra></extra>",
+                customdata=sampled["direction"],
+            )
+        )
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Data/Ora",
+        yaxis_title=unit or "Valore",
+        hovermode="x unified",
+        height=420,
+        barmode="group",
+    )
+    return fig
+
+
+def build_soil_figure(soil_df: pd.DataFrame) -> go.Figure:
+    """Combine all soil-temperature depths into a single chart."""
+    fig = go.Figure()
+    colors = px.colors.qualitative.Plotly
+    station_names = sorted(soil_df["station_name"].unique())
+
+    for station_index, station_name in enumerate(station_names):
+        color = colors[station_index % len(colors)]
+        station_df = soil_df[soil_df["station_name"] == station_name]
+
+        for depth in SOIL_VARIABLES:
+            depth_df = station_df[
+                station_df["variable_type"] == depth
+            ].sort_values("observation_at")
+            if depth_df.empty:
+                continue
+
+            fig.add_trace(
+                go.Scatter(
+                    x=depth_df["observation_at"],
+                    y=depth_df["value_numeric"],
+                    mode="lines",
+                    name=f"{station_name} - {SOIL_DEPTH_LABELS[depth]}",
+                    line=dict(color=color, dash=SOIL_DEPTH_DASHES[depth]),
+                    legendgroup=station_name,
+                )
+            )
+
+    fig.update_layout(
+        title="Temperatura del suolo",
+        xaxis_title="Data/Ora",
+        yaxis_title="°C",
+        hovermode="x unified",
+        height=430,
+    )
+    return fig
+
+
+def render_line_chart(var_df: pd.DataFrame, var: str) -> None:
+    """Draw a standard per-station line chart for a single variable."""
+    fig = px.line(
+        var_df,
+        x="observation_at",
+        y="value_numeric",
+        color="station_name",
+        title=var_label(var),
+        labels={
+            "observation_at": "Data/Ora",
+            "value_numeric": f"{var_label(var)} ({var_df['unit'].iloc[0] if len(var_df) > 0 and var_df['unit'].notna().any() else ''})",
+            "station_name": "Stazione",
+        },
+        markers=True,
+    )
+    fig.update_layout(hovermode="x unified", height=400)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_precipitation_cumulative(chart_stations: list) -> None:
+    """Draw yearly cumulative precipitation as its own standalone chart."""
+    year_start = datetime(datetime.now().year, 1, 1)
+    days_since_year_start = (datetime.now() - year_start).days + 1
+    prec_year_df = get_observations_df(
+        days=days_since_year_start,
+        variable_type="PREC",
+    )
+    prec_year_df = prec_year_df[
+        prec_year_df["station_id"].isin(chart_stations)
+    ]
+    if prec_year_df.empty:
+        return
+
+    prec_year_df = prec_year_df.sort_values("observation_at")
+    prec_year_df["cumulata"] = prec_year_df.groupby("station_id")[
+        "value_numeric"
+    ].cumsum()
+
+    cumulative_fig = go.Figure()
+    for station_id in chart_stations:
+        station_cum = prec_year_df[prec_year_df["station_id"] == station_id]
+        if station_cum.empty:
+            continue
+        station_name = station_cum["station_name"].iloc[0]
+        cumulative_fig.add_trace(
+            go.Scatter(
+                x=station_cum["observation_at"],
+                y=station_cum["cumulata"],
+                name=station_name,
+                mode="lines",
+            )
+        )
+
+    cumulative_fig.update_layout(
+        title="Precipitazione cumulata annua",
+        xaxis_title="Data/Ora",
+        yaxis_title="Cumulata annua (mm)",
+        hovermode="x unified",
+        height=400,
+    )
+    st.plotly_chart(cumulative_fig, use_container_width=True)
+
 
 def get_stations_from_db():
     conn = get_db_connection()
@@ -181,7 +539,9 @@ def get_stations_from_db():
                 s.station_id
             ) AS station_name,
             m.provincia,
-            m.quota
+            m.quota,
+            m.latitudine,
+            m.longitudine
         FROM stations s
         LEFT JOIN station_metadata m
             ON m.station_id = s.station_id
@@ -191,10 +551,349 @@ def get_stations_from_db():
     return pd.read_sql_query(query, conn)
 
 
+def find_nearest_stations(stations_df: pd.DataFrame) -> pd.DataFrame:
+    """For each Veneto provincial capital, find the closest station with coordinates."""
+    candidates = stations_df.dropna(subset=["latitudine", "longitudine"])
+    rows = []
+    for city, (city_lat, city_lon) in VENETO_CAPOLUOGHI.items():
+        if candidates.empty:
+            continue
+        distances = candidates.apply(
+            lambda row: haversine_km(
+                city_lat, city_lon, row["latitudine"], row["longitudine"]
+            ),
+            axis=1,
+        )
+        nearest_index = distances.idxmin()
+        nearest = candidates.loc[nearest_index]
+        rows.append(
+            {
+                "label": city,
+                "station_id": nearest["station_id"],
+                "station_name": nearest["station_name"],
+                "latitudine": nearest["latitudine"],
+                "longitudine": nearest["longitudine"],
+                "distanza_km": distances.loc[nearest_index],
+                "is_home": False,
+            }
+        )
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "label",
+            "station_id",
+            "station_name",
+            "latitudine",
+            "longitudine",
+            "distanza_km",
+            "is_home",
+        ],
+    )
+
+
+def get_latest_temperatures(station_ids: list) -> pd.DataFrame:
+    """Latest TARIA2M reading per station."""
+    if not station_ids:
+        return pd.DataFrame(
+            columns=["station_id", "value_numeric", "observation_at"]
+        )
+    conn = get_db_connection()
+    placeholders = ",".join("?" for _ in station_ids)
+    query = f"""
+        SELECT station_id, value_numeric, MAX(observation_at) AS observation_at
+        FROM observations
+        WHERE variable_type = 'TARIA2M'
+          AND value_numeric IS NOT NULL
+          AND station_id IN ({placeholders})
+        GROUP BY station_id
+    """
+    df = pd.read_sql_query(query, conn, params=station_ids)
+    if not df.empty:
+        df["observation_at"] = pd.to_datetime(df["observation_at"])
+    return df
+
+
+def build_overview_map(points_df: pd.DataFrame) -> go.Figure:
+    """Map of the nearest station to each Veneto capoluogo, plus the home station."""
+    fig = go.Figure()
+
+    capoluoghi = points_df[~points_df["is_home"]]
+    home = points_df[points_df["is_home"]]
+
+    if not capoluoghi.empty:
+        fig.add_trace(
+            go.Scattermapbox(
+                lat=capoluoghi["latitudine"],
+                lon=capoluoghi["longitudine"],
+                mode="markers+text",
+                marker=dict(size=14, color="#2E86AB"),
+                text=capoluoghi["label"],
+                textposition="top center",
+                hovertext=[
+                    f"{row.station_name} — {row.temp_text}"
+                    for row in capoluoghi.itertuples()
+                ],
+                hoverinfo="text",
+                name="Capoluoghi",
+            )
+        )
+
+    if not home.empty:
+        fig.add_trace(
+            go.Scattermapbox(
+                lat=home["latitudine"],
+                lon=home["longitudine"],
+                mode="markers+text",
+                marker=dict(size=18, color="#E63946"),
+                text=home["label"],
+                textposition="top center",
+                hovertext=[
+                    f"{row.station_name} — {row.temp_text}"
+                    for row in home.itertuples()
+                ],
+                hoverinfo="text",
+                name="Casa",
+            )
+        )
+
+    fig.update_layout(
+        mapbox=dict(
+            style="open-street-map",
+            center=dict(lat=45.6, lon=11.9),
+            zoom=7.2,
+        ),
+        height=520,
+        margin=dict(l=0, r=0, t=0, b=0),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+    return fig
+
+
+def build_station_report(station_id: str, station_name: str) -> str:
+    """Templated Italian summary of recent conditions for one station."""
+    df_week = get_observations_df(station_id=station_id, days=7)
+    if df_week.empty:
+        return f"Nessun dato disponibile per {station_name}."
+
+    lines = []
+
+    temp_df = df_week[
+        (df_week["variable_type"] == "TARIA2M") & df_week["value_numeric"].notna()
+    ].sort_values("observation_at")
+
+    if not temp_df.empty:
+        latest = temp_df.iloc[-1]
+        obs_time = latest["observation_at"]
+        lines.append(
+            f"**Temperatura**: {latest['value_numeric']:.1f}°C "
+            f"(rilevata alle {obs_time.strftime('%H:%M')} del "
+            f"{obs_time.strftime('%d/%m')})."
+        )
+
+        target_time = obs_time - timedelta(hours=24)
+        time_diff = (temp_df["observation_at"] - target_time).abs()
+        near_yesterday = temp_df[time_diff <= timedelta(hours=1)]
+        if not near_yesterday.empty:
+            closest = near_yesterday.loc[
+                (near_yesterday["observation_at"] - target_time).abs().idxmin()
+            ]
+            delta = latest["value_numeric"] - closest["value_numeric"]
+            if delta > 0.1:
+                trend = "in aumento"
+            elif delta < -0.1:
+                trend = "in calo"
+            else:
+                trend = "stabile"
+            lines.append(
+                f"Rispetto alla stessa ora di ieri: {trend} ({delta:+.1f}°C)."
+            )
+
+        last_24h = temp_df[temp_df["observation_at"] >= obs_time - timedelta(hours=24)]
+        if not last_24h.empty:
+            lines.append(
+                f"Nelle ultime 24 ore: minima {last_24h['value_numeric'].min():.1f}°C, "
+                f"massima {last_24h['value_numeric'].max():.1f}°C."
+            )
+
+    humidity_df = df_week[
+        (df_week["variable_type"] == "UMID2M") & df_week["value_numeric"].notna()
+    ].sort_values("observation_at")
+    if not humidity_df.empty:
+        lines.append(f"**Umidità**: {humidity_df.iloc[-1]['value_numeric']:.0f}%.")
+
+    wind_speed_df = df_week[
+        (df_week["variable_type"] == "VVENTO10M") & df_week["value_numeric"].notna()
+    ].sort_values("observation_at")
+    wind_dir_df = df_week[
+        (df_week["variable_type"] == "DVENTO10M") & df_week["value_numeric"].notna()
+    ].sort_values("observation_at")
+    if not wind_speed_df.empty:
+        wind_text = f"**Vento**: {wind_speed_df.iloc[-1]['value_numeric']:.1f} m/s"
+        if not wind_dir_df.empty:
+            wind_text += f" da {degrees_to_compass(wind_dir_df.iloc[-1]['value_numeric'])}"
+        lines.append(wind_text + ".")
+
+    prec_df = df_week[
+        (df_week["variable_type"] == "PREC") & df_week["value_numeric"].notna()
+    ]
+    if not prec_df.empty:
+        last_obs = prec_df["observation_at"].max()
+        last_24h_total = prec_df[
+            prec_df["observation_at"] >= last_obs - timedelta(hours=24)
+        ]["value_numeric"].sum()
+        last_7d_total = prec_df["value_numeric"].sum()
+        lines.append(
+            f"**Precipitazione**: {last_24h_total:.1f} mm nelle ultime 24 ore, "
+            f"{last_7d_total:.1f} mm negli ultimi 7 giorni."
+        )
+
+        year_start = datetime(datetime.now().year, 1, 1)
+        days_since_year_start = (datetime.now() - year_start).days + 1
+        prec_year_df = get_observations_df(
+            station_id=station_id,
+            days=days_since_year_start,
+            variable_type="PREC",
+        )
+        if not prec_year_df.empty:
+            month_start = datetime(datetime.now().year, datetime.now().month, 1)
+            month_total = prec_year_df[
+                prec_year_df["observation_at"] >= month_start
+            ]["value_numeric"].sum()
+            year_total = prec_year_df["value_numeric"].sum()
+            lines.append(
+                f"Cumulata: {month_total:.1f} mm questo mese, "
+                f"{year_total:.1f} mm da inizio anno."
+            )
+
+    soil_df = df_week[
+        (df_week["variable_type"] == "TSUOLO") & df_week["value_numeric"].notna()
+    ].sort_values("observation_at")
+    if not soil_df.empty:
+        lines.append(
+            f"**Temperatura del suolo** (superficie): "
+            f"{soil_df.iloc[-1]['value_numeric']:.1f}°C."
+        )
+
+    return "\n\n".join(lines)
+
+
 # Tabs
-tab1, tab2, tab3 = st.tabs(
-    ["📊 Dati", "⚙️ Stazioni", "📈 Grafici"]
+tab0, tab1, tab2, tab3 = st.tabs(
+    ["📍 Panoramica", "📊 Dati", "⚙️ Stazioni", "📈 Grafici"]
 )
+
+# TAB 0: Overview
+with tab0:
+    st.subheader("Panoramica Veneto")
+
+    overview_stations_df = get_stations_from_db()
+    nearest_df = find_nearest_stations(overview_stations_df)
+
+    home_candidates = overview_stations_df[
+        overview_stations_df["station_name"]
+        .str.lower()
+        .str.contains(HOME_STATION_HINT, na=False)
+        & overview_stations_df["latitudine"].notna()
+    ]
+
+    home_row = None
+    if not home_candidates.empty:
+        home_row = home_candidates.iloc[0]
+        home_entry = pd.DataFrame(
+            [
+                {
+                    "label": "Mogliano Veneto (casa)",
+                    "station_id": home_row["station_id"],
+                    "station_name": home_row["station_name"],
+                    "latitudine": home_row["latitudine"],
+                    "longitudine": home_row["longitudine"],
+                    "distanza_km": float("nan"),
+                    "is_home": True,
+                }
+            ]
+        )
+        overview_points = pd.concat(
+            [nearest_df, home_entry], ignore_index=True
+        )
+    else:
+        overview_points = nearest_df
+
+    if overview_points.empty:
+        st.info(
+            "Nessuna stazione con coordinate disponibili: aggiungi "
+            "latitudine/longitudine in station_metadata per abilitare "
+            "la mappa."
+        )
+    else:
+        latest_temps = get_latest_temperatures(
+            overview_points["station_id"].unique().tolist()
+        )
+        overview_points = overview_points.merge(
+            latest_temps, on="station_id", how="left"
+        )
+        overview_points["temp_text"] = overview_points["value_numeric"].apply(
+            lambda v: f"{v:.1f}°C" if pd.notna(v) else "n/d"
+        )
+        overview_points["distanza_km"] = overview_points["distanza_km"].round(1)
+
+        map_col, info_col = st.columns([2, 1])
+
+        with map_col:
+            st.plotly_chart(
+                build_overview_map(overview_points),
+                use_container_width=True,
+            )
+
+        with info_col:
+            if home_row is not None:
+                home_temp_row = latest_temps[
+                    latest_temps["station_id"] == home_row["station_id"]
+                ]
+                if not home_temp_row.empty:
+                    st.metric(
+                        f"🌡️ {home_row['station_name']}",
+                        f"{home_temp_row['value_numeric'].iloc[0]:.1f} °C",
+                    )
+                    st.caption(
+                        "Rilevata alle "
+                        + home_temp_row["observation_at"]
+                        .iloc[0]
+                        .strftime("%H:%M del %d/%m/%Y")
+                    )
+                else:
+                    st.info(
+                        "Nessuna temperatura recente per la stazione di casa"
+                    )
+            else:
+                st.info(
+                    "Nessuna stazione 'Mogliano Veneto' trovata: aggiungila "
+                    "in Gestione Stazioni per vedere qui i dati di casa"
+                )
+
+            st.dataframe(
+                overview_points[
+                    ["label", "station_name", "distanza_km", "temp_text"]
+                ].rename(
+                    columns={
+                        "label": "Zona",
+                        "station_name": "Stazione",
+                        "distanza_km": "Distanza (km)",
+                        "temp_text": "Temperatura",
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        if home_row is not None:
+            st.divider()
+            st.subheader(f"Report — {home_row['station_name']}")
+            st.markdown(
+                build_station_report(
+                    home_row["station_id"], home_row["station_name"]
+                )
+            )
+
 
 # TAB 1: Data View
 with tab1:
@@ -233,6 +932,7 @@ with tab1:
         selected_var = st.selectbox(
             "Tipo Variabile",
             var_types,
+            format_func=lambda v: v if v == "Tutte" else var_label(v),
         )
 
     station_id = (
@@ -365,11 +1065,22 @@ with tab3:
             for _, row in stations_df.iterrows()
         }
         station_names_list = list(stations_dict.keys())
-        default_stations = (
-            station_names_list[:3]
-            if len(station_names_list) >= 3
-            else station_names_list
+        mogliano_name = next(
+            (
+                name
+                for name in station_names_list
+                if "mogliano" in name.lower()
+            ),
+            None,
         )
+        if mogliano_name:
+            default_stations = [mogliano_name]
+        else:
+            default_stations = (
+                station_names_list[:3]
+                if len(station_names_list) >= 3
+                else station_names_list
+            )
 
         chart_station_names = st.multiselect(
             "Stazioni",
@@ -386,97 +1097,187 @@ with tab3:
         df = df[df["station_id"].isin(chart_stations)]
 
         if not df.empty:
-            var_priority = [
-                "TARIA2M",
-                "UMID2M",
-                "VVENTO10M",
-                "DVENTO10M",
-                "RADSOL",
-                "PREC",
+            var_types = sorted(df["variable_type"].unique())
+            rendered_vars = set()
+
+            def render_vars_in_order(vars_in_order):
+                for var in vars_in_order:
+                    if var not in var_types or var in rendered_vars:
+                        continue
+                    var_df = df[df["variable_type"] == var].copy()
+                    if var_df["value_numeric"].notna().sum() == 0:
+                        continue
+                    render_line_chart(var_df, var)
+                    rendered_vars.add(var)
+
+            # 1. Temperatura aria
+            render_vars_in_order(["TARIA2M", "TARIA5M"])
+
+            # 2. Umidità
+            render_vars_in_order(["UMID2M", "UMID5M"])
+
+            # 3. Vento: velocità a barre con freccette di direzione
+            for height in WIND_HEIGHTS:
+                speed_var = f"VVENTO{height}"
+                direction_var = f"DVENTO{height}"
+                if speed_var not in var_types:
+                    continue
+
+                speed_df = df[
+                    (df["variable_type"] == speed_var)
+                    & df["value_numeric"].notna()
+                ]
+                if speed_df.empty:
+                    continue
+
+                direction_df = df[
+                    (df["variable_type"] == direction_var)
+                    & df["value_numeric"].notna()
+                ]
+                unit_values = speed_df["unit"].dropna()
+                speed_unit = (
+                    str(unit_values.iloc[0]) if not unit_values.empty else ""
+                )
+
+                st.plotly_chart(
+                    build_wind_figure(
+                        speed_df,
+                        direction_df,
+                        var_label(speed_var),
+                        speed_unit,
+                    ),
+                    use_container_width=True,
+                )
+                rendered_vars.add(speed_var)
+                rendered_vars.add(direction_var)
+
+            # 4. Radiazione solare
+            render_vars_in_order(["RADSOL"])
+
+            # 5. Temperatura del suolo: tutte le profondità in un unico grafico
+            soil_df = df[
+                df["variable_type"].isin(SOIL_VARIABLES)
+                & df["value_numeric"].notna()
             ]
+            if not soil_df.empty:
+                st.plotly_chart(
+                    build_soil_figure(soil_df),
+                    use_container_width=True,
+                )
+                rendered_vars.update(SOIL_VARIABLES)
 
-            def var_sort_key(v):
-                if v in var_priority:
-                    return (0, var_priority.index(v))
-                return (1, v)
+            # 6. Precipitazione: istantanea + cumulata annua separata
+            if "PREC" in var_types:
+                prec_df = df[df["variable_type"] == "PREC"].copy()
+                if prec_df["value_numeric"].notna().sum() > 0:
+                    render_line_chart(prec_df, "PREC")
+                    render_precipitation_cumulative(chart_stations)
+                rendered_vars.add("PREC")
 
-            var_types = sorted(df["variable_type"].unique(), key=var_sort_key)
+            # 7. Tutte le altre variabili, in ordine alfabetico per etichetta
+            remaining_vars = sorted(
+                (v for v in var_types if v not in rendered_vars),
+                key=var_label,
+            )
+            render_vars_in_order(remaining_vars)
 
-            for var in var_types:
-                var_df = df[df["variable_type"] == var].copy()
+            st.divider()
+            st.subheader("Medie e range temporali")
+            st.caption(
+                "Per ogni periodo vengono mostrati il valore minimo, la media "
+                "e il valore massimo rilevati."
+            )
 
-                if var_df["value_numeric"].notna().sum() > 0:
-                    fig = px.line(
-                        var_df,
-                        x="observation_at",
-                        y="value_numeric",
-                        color="station_name",
-                        title=f"{var}",
-                        labels={
-                            "observation_at": "Data/Ora",
-                            "value_numeric": f"{var} ({var_df['unit'].iloc[0] if len(var_df) > 0 and var_df['unit'].notna().any() else ''})",
-                            "station_name": "Stazione",
-                        },
-                        markers=True,
+            agg_col1, agg_col2 = st.columns([1, 2])
+            with agg_col1:
+                aggregation_period_days = st.selectbox(
+                    "Periodo analizzato",
+                    options=[90, 180, 365, 730, 1825],
+                    index=2,
+                    format_func=lambda value: {
+                        90: "Ultimi 3 mesi",
+                        180: "Ultimi 6 mesi",
+                        365: "Ultimo anno",
+                        730: "Ultimi 2 anni",
+                        1825: "Ultimi 5 anni",
+                    }[value],
+                    key="aggregation_period_days",
+                )
+
+            aggregation_df = get_observations_df(
+                days=aggregation_period_days
+            )
+            aggregation_df = aggregation_df[
+                aggregation_df["station_id"].isin(chart_stations)
+            ]
+            numeric_aggregation_vars = sorted(
+                aggregation_df.loc[
+                    aggregation_df["value_numeric"].notna(), "variable_type"
+                ].unique()
+            )
+
+            with agg_col2:
+                if numeric_aggregation_vars:
+                    default_aggregation_var = (
+                        "TARIA2M"
+                        if "TARIA2M" in numeric_aggregation_vars
+                        else numeric_aggregation_vars[0]
                     )
-
-                    fig.update_layout(
-                        hovermode="x unified",
-                        height=400,
+                    selected_aggregation_var = st.selectbox(
+                        "Variabile da aggregare",
+                        numeric_aggregation_vars,
+                        index=numeric_aggregation_vars.index(
+                            default_aggregation_var
+                        ),
+                        format_func=var_label,
+                        key="aggregation_variable",
                     )
+                else:
+                    selected_aggregation_var = None
+                    st.info("Nessuna variabile numerica disponibile")
 
-                    if var == "PREC":
-                        year_start = datetime(datetime.now().year, 1, 1)
-                        days_since_year_start = (
-                            datetime.now() - year_start
-                        ).days + 1
-                        prec_year_df = get_observations_df(
-                            days=days_since_year_start,
-                            variable_type="PREC",
+            if selected_aggregation_var:
+                selected_aggregation_df = aggregation_df[
+                    aggregation_df["variable_type"]
+                    == selected_aggregation_var
+                ]
+                unit_values = selected_aggregation_df["unit"].dropna()
+                aggregation_unit = (
+                    str(unit_values.iloc[0]) if not unit_values.empty else ""
+                )
+
+                daily_aggregation = aggregate_observations(
+                    selected_aggregation_df, "daily"
+                )
+                monthly_aggregation = aggregate_observations(
+                    selected_aggregation_df, "monthly"
+                )
+
+                daily_col, monthly_col = st.columns(2)
+                with daily_col:
+                    if daily_aggregation.empty:
+                        st.info("Nessun dato giornaliero disponibile")
+                    else:
+                        st.plotly_chart(
+                            build_range_figure(
+                                daily_aggregation,
+                                f"{var_label(selected_aggregation_var)} - andamento giornaliero",
+                                aggregation_unit,
+                            ),
+                            use_container_width=True,
                         )
-                        prec_year_df = prec_year_df[
-                            prec_year_df["station_id"].isin(chart_stations)
-                        ]
-
-                        if not prec_year_df.empty:
-                            prec_year_df = prec_year_df.sort_values(
-                                "observation_at"
-                            )
-                            prec_year_df["cumulata"] = prec_year_df.groupby(
-                                "station_id"
-                            )["value_numeric"].cumsum()
-
-                            for station_id in chart_stations:
-                                station_cum = prec_year_df[
-                                    prec_year_df["station_id"] == station_id
-                                ]
-                                if station_cum.empty:
-                                    continue
-                                station_name = station_cum[
-                                    "station_name"
-                                ].iloc[0]
-                                fig.add_trace(
-                                    go.Scatter(
-                                        x=station_cum["observation_at"],
-                                        y=station_cum["cumulata"],
-                                        name=f"{station_name} (cumulata)",
-                                        yaxis="y2",
-                                        line=dict(dash="dot"),
-                                    )
-                                )
-
-                            fig.update_layout(
-                                yaxis2=dict(
-                                    title="Cumulata annua (mm)",
-                                    overlaying="y",
-                                    side="right",
-                                ),
-                            )
-
-                    st.plotly_chart(
-                        fig,
-                        use_container_width=True,
-                    )
+                with monthly_col:
+                    if monthly_aggregation.empty:
+                        st.info("Nessun dato mensile disponibile")
+                    else:
+                        st.plotly_chart(
+                            build_range_figure(
+                                monthly_aggregation,
+                                f"{var_label(selected_aggregation_var)} - andamento mensile",
+                                aggregation_unit,
+                            ),
+                            use_container_width=True,
+                        )
         else:
             st.warning("Nessun dato disponibile per il periodo selezionato")
     else:
