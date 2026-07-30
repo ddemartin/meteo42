@@ -283,8 +283,8 @@ def aggregate_observations(
             ]
         )
 
-    if frequency not in {"daily", "monthly"}:
-        raise ValueError("frequency must be 'daily' or 'monthly'")
+    if frequency not in {"daily", "weekly", "monthly"}:
+        raise ValueError("frequency must be 'daily', 'weekly' or 'monthly'")
 
     numeric = observations.dropna(
         subset=["observation_at", "value_numeric"]
@@ -300,24 +300,45 @@ def aggregate_observations(
             ]
         )
 
-    if frequency == "daily":
-        numeric["period"] = numeric["observation_at"].dt.floor("D")
-    else:
-        numeric["period"] = (
-            numeric["observation_at"].dt.to_period("M").dt.to_timestamp()
-        )
+    def period_of(timestamps: pd.Series) -> pd.Series:
+        if frequency == "daily":
+            return timestamps.dt.floor("D")
+        if frequency == "weekly":
+            return timestamps.dt.to_period("W-MON").dt.start_time
+        return timestamps.dt.to_period("M").dt.to_timestamp()
 
-    return (
-        numeric.groupby(["period", "station_name"], as_index=False)[
+    numeric["period"] = period_of(numeric["observation_at"])
+
+    min_max = numeric.groupby(["period", "station_name"], as_index=False)[
+        "value_numeric"
+    ].agg(minimum="min", maximum="max")
+
+    # The average is a mean of *daily* time-weighted averages (not a naive
+    # mean of raw readings): otherwise days with denser sampling (10-min live
+    # data) would outweigh days with sparser sampling (hourly historical
+    # data) within the same weekly/monthly average.
+    daily_weighted = compute_daily_weighted_averages(observations)
+    if daily_weighted.empty:
+        min_max["average"] = float("nan")
+        return min_max.sort_values(["period", "station_name"])[
+            ["period", "station_name", "minimum", "average", "maximum"]
+        ]
+
+    daily_weighted["period"] = period_of(daily_weighted["day"])
+    averages = (
+        daily_weighted.groupby(["period", "station_name"], as_index=False)[
             "value_numeric"
         ]
-        .agg(
-            minimum="min",
-            average="mean",
-            maximum="max",
-        )
-        .sort_values(["period", "station_name"])
+        .mean()
+        .rename(columns={"value_numeric": "average"})
     )
+    averages["average"] = averages["average"].round(1)
+
+    return min_max.merge(
+        averages, on=["period", "station_name"], how="left"
+    ).sort_values(["period", "station_name"])[
+        ["period", "station_name", "minimum", "average", "maximum"]
+    ]
 
 
 def build_range_figure(
@@ -510,6 +531,128 @@ def render_line_chart(var_df: pd.DataFrame, var: str) -> None:
         margin=MOBILE_CHART_MARGIN,
     )
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+
+
+def aggregate_precipitation_totals(
+    observations: pd.DataFrame,
+    frequency: str,
+) -> pd.DataFrame:
+    """Sum precipitation by station and week/month (missing readings count as 0)."""
+    if frequency not in {"weekly", "monthly"}:
+        raise ValueError("frequency must be 'weekly' or 'monthly'")
+
+    required_columns = {"station_name", "observation_at", "value_numeric"}
+    if observations.empty or not required_columns.issubset(observations.columns):
+        return pd.DataFrame(columns=["period", "station_name", "totale"])
+
+    numeric = observations.dropna(subset=["observation_at"]).copy()
+    numeric["value_numeric"] = numeric["value_numeric"].fillna(0.0)
+    if numeric.empty:
+        return pd.DataFrame(columns=["period", "station_name", "totale"])
+
+    if frequency == "weekly":
+        numeric["period"] = (
+            numeric["observation_at"].dt.to_period("W-MON").dt.start_time
+        )
+    else:
+        numeric["period"] = (
+            numeric["observation_at"].dt.to_period("M").dt.to_timestamp()
+        )
+
+    return (
+        numeric.groupby(["period", "station_name"], as_index=False)[
+            "value_numeric"
+        ]
+        .sum()
+        .rename(columns={"value_numeric": "totale"})
+        .sort_values(["period", "station_name"])
+    )
+
+
+def build_precipitation_totals_figure(
+    aggregated: pd.DataFrame,
+    title: str,
+) -> go.Figure:
+    """Grouped bar chart of precipitation totals per station and period."""
+    fig = px.bar(
+        aggregated,
+        x="period",
+        y="totale",
+        color="station_name",
+        barmode="group",
+        title=title,
+        labels={
+            "period": "Periodo",
+            "totale": "Precipitazione (mm)",
+            "station_name": "Stazione",
+        },
+    )
+    fig.update_layout(
+        hovermode="x unified",
+        height=400,
+        legend=MOBILE_LEGEND,
+        margin=MOBILE_CHART_MARGIN,
+    )
+    return fig
+
+
+YEAR_DASH_CYCLE = ["solid", "dash", "dot", "dashdot", "longdash", "longdashdot"]
+
+
+def build_yearly_precipitation_comparison(prec_df: pd.DataFrame) -> go.Figure:
+    """Cumulative precipitation per calendar year, aligned on a Jan-Dec axis so
+    different years can be compared station by station."""
+    fig = go.Figure()
+    colors = px.colors.qualitative.Plotly
+    station_names = sorted(prec_df["station_name"].unique())
+
+    for station_index, station_name in enumerate(station_names):
+        color = colors[station_index % len(colors)]
+        station_df = prec_df[
+            prec_df["station_name"] == station_name
+        ].sort_values("observation_at")
+
+        years = sorted(station_df["observation_at"].dt.year.unique())
+        for year_index, year in enumerate(years):
+            year_df = station_df[
+                station_df["observation_at"].dt.year == year
+            ].copy()
+            if year_df.empty:
+                continue
+
+            year_df["cumulata"] = year_df["value_numeric"].fillna(0.0).cumsum()
+            # Reference year 2000 (leap) so Feb 29 lines up and all years share
+            # a single Jan-Dec axis.
+            reference_date = pd.to_datetime(
+                {
+                    "year": 2000,
+                    "month": year_df["observation_at"].dt.month,
+                    "day": year_df["observation_at"].dt.day,
+                }
+            )
+            dash = YEAR_DASH_CYCLE[year_index % len(YEAR_DASH_CYCLE)]
+
+            fig.add_trace(
+                go.Scatter(
+                    x=reference_date,
+                    y=year_df["cumulata"],
+                    name=f"{station_name} - {year}",
+                    mode="lines",
+                    line=dict(color=color, dash=dash),
+                    legendgroup=station_name,
+                )
+            )
+
+    fig.update_layout(
+        title="Precipitazione cumulata - confronto tra anni",
+        xaxis=dict(title="Mese", tickformat="%d %b"),
+        yaxis_title="Cumulata (mm)",
+        hovermode="x unified",
+        height=450,
+        legend=MOBILE_LEGEND,
+        margin=MOBILE_CHART_MARGIN,
+    )
+    return fig
 
 
 def render_precipitation_cumulative(chart_stations: list) -> None:
@@ -866,10 +1009,29 @@ def heat_index_celsius(temp_c, humidity_pct):
     return (heat_index_f - 32) * 5 / 9
 
 
+def duration_weighted_mean(times: list, values: list, period_end) -> float | None:
+    """Mean of `values` weighted by how long each one held (until the next
+    reading, or until `period_end` for the last one), instead of a naive
+    unweighted mean: e.g. 20h at 30°C and 10h at 10°C should not average to
+    20°C, it should reflect that 30°C held for twice as long. This also keeps
+    periods with denser sampling (10-min live data) from outweighing periods
+    with sparser sampling (hourly historical data) within the same average."""
+    boundaries = times + [period_end]
+
+    weighted_sum = 0.0
+    total_weight = 0.0
+    for index, value in enumerate(values):
+        weight_hours = (
+            boundaries[index + 1] - boundaries[index]
+        ).total_seconds() / 3600
+        weighted_sum += value * weight_hours
+        total_weight += weight_hours
+
+    return weighted_sum / total_weight if total_weight > 0 else None
+
+
 def compute_weighted_daily_temperature(temp_df: pd.DataFrame) -> pd.DataFrame:
-    """Daily mean temperature weighted by how long each reading held, instead of a
-    naive (max+min)/2 or an unweighted mean: e.g. 20h at 30°C and 10h at 10°C should
-    not average to 20°C, it should reflect that 30°C held for twice as long."""
+    """Per-day temperature average weighted by how long each reading held."""
     clean = temp_df.dropna(subset=["observation_at", "value_numeric"]).sort_values(
         "observation_at"
     )
@@ -881,22 +1043,51 @@ def compute_weighted_daily_temperature(temp_df: pd.DataFrame) -> pd.DataFrame:
 
     rows = []
     for day, group in clean.groupby("day"):
-        times = group["observation_at"].tolist()
-        values = group["value_numeric"].tolist()
-        boundaries = times + [day + timedelta(days=1)]
-
-        weighted_sum = 0.0
-        total_weight = 0.0
-        for index, value in enumerate(values):
-            weight_hours = (
-                boundaries[index + 1] - boundaries[index]
-            ).total_seconds() / 3600
-            weighted_sum += value * weight_hours
-            total_weight += weight_hours
-
-        if total_weight > 0:
+        weighted_average = duration_weighted_mean(
+            group["observation_at"].tolist(),
+            group["value_numeric"].tolist(),
+            day + timedelta(days=1),
+        )
+        if weighted_average is not None:
             rows.append(
-                {"day": day, "weighted_average": weighted_sum / total_weight}
+                {"day": day, "weighted_average": round(weighted_average, 1)}
+            )
+
+    return pd.DataFrame(rows)
+
+
+def compute_daily_weighted_averages(observations: pd.DataFrame) -> pd.DataFrame:
+    """Per-station, per-day average weighted by how long each reading held.
+    Used as the building block for weekly/monthly aggregates: averaging this
+    day-by-day, instead of averaging raw readings directly, keeps days with
+    denser sampling from outweighing days with sparser sampling within the
+    same weekly/monthly average."""
+    required_columns = {"station_name", "observation_at", "value_numeric"}
+    if observations.empty or not required_columns.issubset(observations.columns):
+        return pd.DataFrame(columns=["day", "station_name", "value_numeric"])
+
+    clean = observations.dropna(
+        subset=["observation_at", "value_numeric"]
+    ).sort_values("observation_at").copy()
+    if clean.empty:
+        return pd.DataFrame(columns=["day", "station_name", "value_numeric"])
+
+    clean["day"] = clean["observation_at"].dt.floor("D")
+
+    rows = []
+    for (day, station_name), group in clean.groupby(["day", "station_name"]):
+        weighted_average = duration_weighted_mean(
+            group["observation_at"].tolist(),
+            group["value_numeric"].tolist(),
+            day + timedelta(days=1),
+        )
+        if weighted_average is not None:
+            rows.append(
+                {
+                    "day": day,
+                    "station_name": station_name,
+                    "value_numeric": weighted_average,
+                }
             )
 
     return pd.DataFrame(rows)
@@ -1014,8 +1205,14 @@ def render_temperature_chart_with_overlays(
 
 
 # Tabs
-tab0, tab1, tab2, tab3 = st.tabs(
-    ["📍 Panoramica", "📊 Dati", "⚙️ Stazioni", "📈 Grafici"]
+tab0, tab1, tab2, tab3, tab4 = st.tabs(
+    [
+        "📍 Panoramica",
+        "📊 Dati",
+        "⚙️ Stazioni",
+        "📈 Grafici",
+        "📅 Storico Annuale",
+    ]
 )
 
 # TAB 0: Overview
@@ -1561,3 +1758,192 @@ with tab3:
             st.warning("Nessun dato disponibile per il periodo selezionato")
     else:
         st.info("Seleziona almeno una stazione")
+
+
+# TAB 4: Yearly / long-range history
+with tab4:
+    st.subheader("Storico Annuale")
+    st.caption(
+        "Medie e bande di oscillazione settimanali/mensili, e precipitazioni "
+        "settimanali, mensili e cumulate a confronto tra anni."
+    )
+
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        yearly_period_options = {
+            "Ultimo anno": 365,
+            "Ultimi 2 anni": 730,
+            "Ultimi 3 anni": 1095,
+            "Ultimi 5 anni": 1825,
+            "Tutto lo storico": 3650,
+        }
+        selected_yearly_period = st.selectbox(
+            "Periodo",
+            list(yearly_period_options.keys()),
+            index=1,
+            key="yearly_period",
+        )
+        yearly_period_days = yearly_period_options[selected_yearly_period]
+
+    stations_df = get_stations_from_db()
+    stations_dict = {
+        row["station_name"]: row["station_id"]
+        for _, row in stations_df.iterrows()
+    }
+    station_names_list = list(stations_dict.keys())
+    mogliano_name = next(
+        (name for name in station_names_list if "mogliano" in name.lower()),
+        None,
+    )
+    default_yearly_stations = (
+        [mogliano_name] if mogliano_name else station_names_list[:1]
+    )
+
+    with col2:
+        yearly_station_names = st.multiselect(
+            "Stazioni",
+            station_names_list,
+            default=default_yearly_stations,
+            key="yearly_stations",
+        )
+
+    yearly_stations = [
+        stations_dict[name] for name in yearly_station_names
+    ]
+
+    if not yearly_stations:
+        st.info("Seleziona almeno una stazione")
+    else:
+        yearly_df = get_observations_df(days=yearly_period_days)
+        yearly_df = yearly_df[yearly_df["station_id"].isin(yearly_stations)]
+
+        if yearly_df.empty:
+            st.warning("Nessun dato disponibile per il periodo selezionato")
+        else:
+            st.divider()
+            st.write("### Medie e oscillazione settimanale/mensile")
+
+            numeric_vars = sorted(
+                yearly_df.loc[
+                    yearly_df["value_numeric"].notna()
+                    & (yearly_df["variable_type"] != "PREC"),
+                    "variable_type",
+                ].unique()
+            )
+
+            if numeric_vars:
+                default_yearly_var = (
+                    "TARIA2M" if "TARIA2M" in numeric_vars else numeric_vars[0]
+                )
+                selected_yearly_var = st.selectbox(
+                    "Variabile",
+                    numeric_vars,
+                    index=numeric_vars.index(default_yearly_var),
+                    format_func=var_label,
+                    key="yearly_variable",
+                )
+
+                yearly_var_df = yearly_df[
+                    yearly_df["variable_type"] == selected_yearly_var
+                ]
+                unit_values = yearly_var_df["unit"].dropna()
+                yearly_var_unit = (
+                    str(unit_values.iloc[0]) if not unit_values.empty else ""
+                )
+
+                weekly_aggregation = aggregate_observations(
+                    yearly_var_df, "weekly"
+                )
+                monthly_aggregation = aggregate_observations(
+                    yearly_var_df, "monthly"
+                )
+
+                weekly_col, monthly_col = st.columns(2)
+                with weekly_col:
+                    if weekly_aggregation.empty:
+                        st.info("Nessun dato settimanale disponibile")
+                    else:
+                        st.plotly_chart(
+                            build_range_figure(
+                                weekly_aggregation,
+                                f"{var_label(selected_yearly_var)} - andamento settimanale",
+                                yearly_var_unit,
+                            ),
+                            use_container_width=True,
+                            config=PLOTLY_CONFIG,
+                        )
+                with monthly_col:
+                    if monthly_aggregation.empty:
+                        st.info("Nessun dato mensile disponibile")
+                    else:
+                        st.plotly_chart(
+                            build_range_figure(
+                                monthly_aggregation,
+                                f"{var_label(selected_yearly_var)} - andamento mensile",
+                                yearly_var_unit,
+                            ),
+                            use_container_width=True,
+                            config=PLOTLY_CONFIG,
+                        )
+            else:
+                st.info(
+                    "Nessuna variabile numerica disponibile per il periodo/"
+                    "stazioni selezionati"
+                )
+
+            st.divider()
+            st.write("### Precipitazioni")
+
+            yearly_prec_df = yearly_df[
+                yearly_df["variable_type"] == "PREC"
+            ].copy()
+
+            if yearly_prec_df.empty:
+                st.info("Nessun dato di precipitazione disponibile")
+            else:
+                weekly_totals = aggregate_precipitation_totals(
+                    yearly_prec_df, "weekly"
+                )
+                monthly_totals = aggregate_precipitation_totals(
+                    yearly_prec_df, "monthly"
+                )
+
+                weekly_prec_col, monthly_prec_col = st.columns(2)
+                with weekly_prec_col:
+                    if weekly_totals.empty:
+                        st.info("Nessun totale settimanale disponibile")
+                    else:
+                        st.plotly_chart(
+                            build_precipitation_totals_figure(
+                                weekly_totals, "Precipitazione settimanale"
+                            ),
+                            use_container_width=True,
+                            config=PLOTLY_CONFIG,
+                        )
+                with monthly_prec_col:
+                    if monthly_totals.empty:
+                        st.info("Nessun totale mensile disponibile")
+                    else:
+                        st.plotly_chart(
+                            build_precipitation_totals_figure(
+                                monthly_totals, "Precipitazione mensile"
+                            ),
+                            use_container_width=True,
+                            config=PLOTLY_CONFIG,
+                        )
+
+                # Year-over-year comparison always looks at full history,
+                # regardless of the period picked above for the other charts.
+                prec_history_df = get_observations_df(
+                    days=3650, variable_type="PREC"
+                )
+                prec_history_df = prec_history_df[
+                    prec_history_df["station_id"].isin(yearly_stations)
+                ]
+                if not prec_history_df.empty:
+                    st.plotly_chart(
+                        build_yearly_precipitation_comparison(prec_history_df),
+                        use_container_width=True,
+                        config=PLOTLY_CONFIG,
+                    )
