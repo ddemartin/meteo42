@@ -2,6 +2,11 @@
 
 Scraper e dashboard per i dati meteorologici della rete ARPAV (Agenzia Regionale per la Prevenzione e Protezione dell'Ambiente Veneto).
 
+
+## Avvio
+
+launchctl kickstart -k gui/$(id -u)/com.meteo42.dashboard
+
 ## Setup
 
 ```bash
@@ -126,6 +131,7 @@ La dashboard Streamlit offre 3 tab:
 **📈 Grafici**
 - Trend temporali per variabile
 - Confronta più stazioni
+- Grafici giornalieri e mensili con minimo, media e massimo
 - Visualizzazione interattiva con Plotly
 
 ## API Endpoints
