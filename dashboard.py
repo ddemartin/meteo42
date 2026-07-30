@@ -5,10 +5,14 @@ import sqlite3
 import json
 from pathlib import Path
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import streamlit as st
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+from astral import LocationInfo
+from astral.sun import sun
 
 import scrape
 
@@ -79,6 +83,20 @@ WIND_COMPASS_LABELS = [
     "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
     "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
 ]
+
+HOME_TIMEZONE = "Europe/Rome"
+
+# Horizontal legend below the plot area: a right-side vertical legend eats
+# fixed width from the chart, which crushes the plot on narrow/mobile screens.
+MOBILE_LEGEND = dict(
+    orientation="h",
+    yanchor="top",
+    y=-0.25,
+    xanchor="center",
+    x=0.5,
+)
+MOBILE_CHART_MARGIN = dict(b=110)
+PLOTLY_CONFIG = {"responsive": True}
 
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -341,6 +359,8 @@ def build_range_figure(
         hovermode="x unified",
         height=430,
         legend_title="Stazione / statistica",
+        legend=MOBILE_LEGEND,
+        margin=MOBILE_CHART_MARGIN,
     )
     return fig
 
@@ -422,6 +442,8 @@ def build_wind_figure(
         hovermode="x unified",
         height=420,
         barmode="group",
+        legend=MOBILE_LEGEND,
+        margin=MOBILE_CHART_MARGIN,
     )
     return fig
 
@@ -460,6 +482,8 @@ def build_soil_figure(soil_df: pd.DataFrame) -> go.Figure:
         yaxis_title="°C",
         hovermode="x unified",
         height=430,
+        legend=MOBILE_LEGEND,
+        margin=MOBILE_CHART_MARGIN,
     )
     return fig
 
@@ -479,8 +503,13 @@ def render_line_chart(var_df: pd.DataFrame, var: str) -> None:
         },
         markers=True,
     )
-    fig.update_layout(hovermode="x unified", height=400)
-    st.plotly_chart(fig, use_container_width=True)
+    fig.update_layout(
+        hovermode="x unified",
+        height=400,
+        legend=MOBILE_LEGEND,
+        margin=MOBILE_CHART_MARGIN,
+    )
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
 
 def render_precipitation_cumulative(chart_stations: list) -> None:
@@ -523,8 +552,10 @@ def render_precipitation_cumulative(chart_stations: list) -> None:
         yaxis_title="Cumulata annua (mm)",
         hovermode="x unified",
         height=400,
+        legend=MOBILE_LEGEND,
+        margin=MOBILE_CHART_MARGIN,
     )
-    st.plotly_chart(cumulative_fig, use_container_width=True)
+    st.plotly_chart(cumulative_fig, use_container_width=True, config=PLOTLY_CONFIG)
 
 
 def get_stations_from_db():
@@ -622,7 +653,7 @@ def build_overview_map(points_df: pd.DataFrame) -> go.Figure:
 
     if not capoluoghi.empty:
         fig.add_trace(
-            go.Scattermapbox(
+            go.Scattermap(
                 lat=capoluoghi["latitudine"],
                 lon=capoluoghi["longitudine"],
                 mode="markers+text",
@@ -640,7 +671,7 @@ def build_overview_map(points_df: pd.DataFrame) -> go.Figure:
 
     if not home.empty:
         fig.add_trace(
-            go.Scattermapbox(
+            go.Scattermap(
                 lat=home["latitudine"],
                 lon=home["longitudine"],
                 mode="markers+text",
@@ -657,14 +688,16 @@ def build_overview_map(points_df: pd.DataFrame) -> go.Figure:
         )
 
     fig.update_layout(
-        mapbox=dict(
+        autosize=True,
+        uirevision="overview-map",
+        map=dict(
             style="open-street-map",
             center=dict(lat=45.6, lon=11.9),
             zoom=7.2,
         ),
         height=520,
-        margin=dict(l=0, r=0, t=0, b=0),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        margin=dict(l=0, r=0, t=36, b=0),
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="left", x=0),
     )
     return fig
 
@@ -777,6 +810,209 @@ def build_station_report(station_id: str, station_name: str) -> str:
     return "\n\n".join(lines)
 
 
+def compute_sun_times(lat: float, lon: float, target_date) -> dict:
+    """Sunrise, solar noon (culmine) and sunset for a location, plus day/night length."""
+    location = LocationInfo(latitude=lat, longitude=lon)
+    tzinfo = ZoneInfo(HOME_TIMEZONE)
+    times = sun(location.observer, date=target_date, tzinfo=tzinfo)
+    day_length = times["sunset"] - times["sunrise"]
+    night_length = timedelta(hours=24) - day_length
+    return {
+        "sunrise": times["sunrise"],
+        "noon": times["noon"],
+        "sunset": times["sunset"],
+        "day_length": day_length,
+        "night_length": night_length,
+    }
+
+
+def format_timedelta_hm(delta: timedelta) -> str:
+    total_minutes = int(delta.total_seconds() // 60)
+    hours, minutes = divmod(total_minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
+def heat_index_celsius(temp_c, humidity_pct):
+    """NOAA/NWS heat index (Rothfusz regression). Accepts scalars or arrays, returns °C."""
+    temp_f = temp_c * 9 / 5 + 32
+    hi_simple = 0.5 * (temp_f + 61.0 + (temp_f - 68.0) * 1.2 + humidity_pct * 0.094)
+
+    hi_full = (
+        -42.379
+        + 2.04901523 * temp_f
+        + 10.14333127 * humidity_pct
+        - 0.22475541 * temp_f * humidity_pct
+        - 0.00683783 * temp_f**2
+        - 0.05481717 * humidity_pct**2
+        + 0.00122874 * temp_f**2 * humidity_pct
+        + 0.00085282 * temp_f * humidity_pct**2
+        - 0.00000199 * temp_f**2 * humidity_pct**2
+    )
+
+    low_adjustment = ((13 - humidity_pct) / 4) * np.sqrt(
+        np.clip((17 - np.abs(temp_f - 95)) / 17, 0, None)
+    )
+    high_adjustment = ((humidity_pct - 85) / 10) * ((87 - temp_f) / 5)
+
+    needs_low_adj = (humidity_pct < 13) & (temp_f >= 80) & (temp_f <= 112)
+    needs_high_adj = (humidity_pct > 85) & (temp_f >= 80) & (temp_f <= 87)
+
+    hi_full = np.where(needs_low_adj, hi_full - low_adjustment, hi_full)
+    hi_full = np.where(needs_high_adj, hi_full + high_adjustment, hi_full)
+
+    use_full_formula = ((temp_f + hi_simple) / 2) >= 80
+    heat_index_f = np.where(use_full_formula, hi_full, hi_simple)
+
+    return (heat_index_f - 32) * 5 / 9
+
+
+def compute_weighted_daily_temperature(temp_df: pd.DataFrame) -> pd.DataFrame:
+    """Daily mean temperature weighted by how long each reading held, instead of a
+    naive (max+min)/2 or an unweighted mean: e.g. 20h at 30°C and 10h at 10°C should
+    not average to 20°C, it should reflect that 30°C held for twice as long."""
+    clean = temp_df.dropna(subset=["observation_at", "value_numeric"]).sort_values(
+        "observation_at"
+    )
+    if clean.empty:
+        return pd.DataFrame(columns=["day", "weighted_average"])
+
+    clean = clean.copy()
+    clean["day"] = clean["observation_at"].dt.floor("D")
+
+    rows = []
+    for day, group in clean.groupby("day"):
+        times = group["observation_at"].tolist()
+        values = group["value_numeric"].tolist()
+        boundaries = times + [day + timedelta(days=1)]
+
+        weighted_sum = 0.0
+        total_weight = 0.0
+        for index, value in enumerate(values):
+            weight_hours = (
+                boundaries[index + 1] - boundaries[index]
+            ).total_seconds() / 3600
+            weighted_sum += value * weight_hours
+            total_weight += weight_hours
+
+        if total_weight > 0:
+            rows.append(
+                {"day": day, "weighted_average": weighted_sum / total_weight}
+            )
+
+    return pd.DataFrame(rows)
+
+
+def render_temperature_chart_with_overlays(
+    full_df: pd.DataFrame,
+    temp_df: pd.DataFrame,
+    chart_stations: list,
+    station_id_to_name: dict,
+) -> None:
+    """TARIA2M chart with optional heat index / duration-weighted daily average
+    overlays, toggleable so they don't clutter the base temperature chart."""
+    station_names = sorted(temp_df["station_name"].unique())
+    colors = px.colors.qualitative.Plotly
+    color_map = {
+        name: colors[index % len(colors)] for index, name in enumerate(station_names)
+    }
+
+    overlay_col1, overlay_col2 = st.columns(2)
+    with overlay_col1:
+        show_heat_index = st.checkbox(
+            "🌡️ Mostra indice di calore", key="show_heat_index_overlay"
+        )
+    with overlay_col2:
+        show_weighted_avg = st.checkbox(
+            "📅 Mostra media ponderata giornaliera", key="show_weighted_avg_overlay"
+        )
+
+    fig = px.line(
+        temp_df,
+        x="observation_at",
+        y="value_numeric",
+        color="station_name",
+        color_discrete_map=color_map,
+        title=var_label("TARIA2M"),
+        labels={
+            "observation_at": "Data/Ora",
+            "value_numeric": f"{var_label('TARIA2M')} (°C)",
+            "station_name": "Stazione",
+        },
+        markers=True,
+    )
+
+    if show_heat_index:
+        humidity_df = full_df[
+            (full_df["variable_type"] == "UMID2M") & full_df["value_numeric"].notna()
+        ]
+        for station_id in chart_stations:
+            station_name = station_id_to_name.get(station_id)
+            station_temp = temp_df[
+                temp_df["station_id"] == station_id
+            ].sort_values("observation_at")
+            station_hum = humidity_df[
+                humidity_df["station_id"] == station_id
+            ].sort_values("observation_at")
+            if station_name is None or station_temp.empty or station_hum.empty:
+                continue
+
+            merged = pd.merge_asof(
+                station_temp[["observation_at", "value_numeric"]].rename(
+                    columns={"value_numeric": "temperatura"}
+                ),
+                station_hum[["observation_at", "value_numeric"]].rename(
+                    columns={"value_numeric": "umidita"}
+                ),
+                on="observation_at",
+                tolerance=pd.Timedelta("30min"),
+                direction="nearest",
+            ).dropna(subset=["umidita"])
+            if merged.empty:
+                continue
+
+            merged["indice_calore"] = heat_index_celsius(
+                merged["temperatura"], merged["umidita"]
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=merged["observation_at"],
+                    y=merged["indice_calore"],
+                    mode="lines",
+                    name=f"{station_name} - Indice di calore",
+                    line=dict(color=color_map.get(station_name), dash="dot"),
+                )
+            )
+
+    if show_weighted_avg:
+        for station_id in chart_stations:
+            station_name = station_id_to_name.get(station_id)
+            if station_name is None:
+                continue
+            station_temp = temp_df[temp_df["station_id"] == station_id]
+            weighted = compute_weighted_daily_temperature(station_temp)
+            if weighted.empty:
+                continue
+
+            fig.add_trace(
+                go.Scatter(
+                    x=weighted["day"] + timedelta(hours=12),
+                    y=weighted["weighted_average"],
+                    mode="lines+markers",
+                    name=f"{station_name} - Media pond. giornaliera",
+                    line=dict(color=color_map.get(station_name), dash="dash", width=3),
+                    marker=dict(size=8, symbol="diamond"),
+                )
+            )
+
+    fig.update_layout(
+        hovermode="x unified",
+        height=430,
+        legend=MOBILE_LEGEND,
+        margin=MOBILE_CHART_MARGIN,
+    )
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+
+
 # Tabs
 tab0, tab1, tab2, tab3 = st.tabs(
     ["📍 Panoramica", "📊 Dati", "⚙️ Stazioni", "📈 Grafici"]
@@ -842,6 +1078,7 @@ with tab0:
             st.plotly_chart(
                 build_overview_map(overview_points),
                 use_container_width=True,
+                config=PLOTLY_CONFIG,
             )
 
         with info_col:
@@ -893,6 +1130,30 @@ with tab0:
                     home_row["station_id"], home_row["station_name"]
                 )
             )
+
+            if pd.notna(home_row["latitudine"]) and pd.notna(home_row["longitudine"]):
+                st.divider()
+                st.subheader("☀️ Sole e durata del giorno")
+                sun_times = compute_sun_times(
+                    home_row["latitudine"],
+                    home_row["longitudine"],
+                    datetime.now().date(),
+                )
+
+                sunrise_col, noon_col, sunset_col = st.columns(3)
+                sunrise_col.metric("🌅 Sorge", sun_times["sunrise"].strftime("%H:%M"))
+                noon_col.metric("🕛 Culmina", sun_times["noon"].strftime("%H:%M"))
+                sunset_col.metric("🌇 Tramonta", sun_times["sunset"].strftime("%H:%M"))
+
+                day_col, night_col = st.columns(2)
+                day_col.metric(
+                    "☀️ Durata del giorno",
+                    format_timedelta_hm(sun_times["day_length"]),
+                )
+                night_col.metric(
+                    "🌙 Durata della notte",
+                    format_timedelta_hm(sun_times["night_length"]),
+                )
 
 
 # TAB 1: Data View
@@ -1110,8 +1371,22 @@ with tab3:
                     render_line_chart(var_df, var)
                     rendered_vars.add(var)
 
-            # 1. Temperatura aria
-            render_vars_in_order(["TARIA2M", "TARIA5M"])
+            # 1. Temperatura aria (TARIA2M con overlay opzionali indice di
+            # calore / media ponderata giornaliera; TARIA5M come al solito)
+            if "TARIA2M" in var_types:
+                taria2m_df = df[
+                    (df["variable_type"] == "TARIA2M") & df["value_numeric"].notna()
+                ].copy()
+                if not taria2m_df.empty:
+                    station_id_to_name = {
+                        station_id: name for name, station_id in stations_dict.items()
+                    }
+                    render_temperature_chart_with_overlays(
+                        df, taria2m_df, chart_stations, station_id_to_name
+                    )
+                rendered_vars.add("TARIA2M")
+
+            render_vars_in_order(["TARIA5M"])
 
             # 2. Umidità
             render_vars_in_order(["UMID2M", "UMID5M"])
@@ -1147,6 +1422,7 @@ with tab3:
                         speed_unit,
                     ),
                     use_container_width=True,
+                    config=PLOTLY_CONFIG,
                 )
                 rendered_vars.add(speed_var)
                 rendered_vars.add(direction_var)
@@ -1163,6 +1439,7 @@ with tab3:
                 st.plotly_chart(
                     build_soil_figure(soil_df),
                     use_container_width=True,
+                    config=PLOTLY_CONFIG,
                 )
                 rendered_vars.update(SOIL_VARIABLES)
 
@@ -1265,6 +1542,7 @@ with tab3:
                                 aggregation_unit,
                             ),
                             use_container_width=True,
+                            config=PLOTLY_CONFIG,
                         )
                 with monthly_col:
                     if monthly_aggregation.empty:
@@ -1277,6 +1555,7 @@ with tab3:
                                 aggregation_unit,
                             ),
                             use_container_width=True,
+                            config=PLOTLY_CONFIG,
                         )
         else:
             st.warning("Nessun dato disponibile per il periodo selezionato")
