@@ -39,3 +39,4 @@ build/
 
 # Local dashboard runtime config
 .dashboard_config.json
+stations.json
