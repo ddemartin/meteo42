@@ -9,12 +9,9 @@ from pathlib import Path
 STATION_ID = "300000150"
 STATION_NAME = "Mogliano Veneto"
 DATABASE_PATH = Path("arpav_meteo.sqlite")
+RAW_DIRECTORY = Path("raw")
 
-RAW_FILES = [
-    Path("raw/moglianoveneto_227_2024.txt"),
-    Path("raw/moglianoveneto_227_2025.txt"),
-    Path("raw/moglianoveneto_227_2026.txt"),
-]
+RAW_FILES = sorted(RAW_DIRECTORY.glob("moglianoveneto_227_*.txt"))
 
 # column_name -> (variable_type, unit, is_numeric, conversion_factor)
 #
@@ -102,6 +99,29 @@ def parse_file(path: Path, downloaded_at: str) -> list[tuple]:
                         value_text,
                         value_numeric,
                         unit,
+                        downloaded_at,
+                        raw_json,
+                    )
+                )
+
+            # The historical bulletin only has hourly UMID_MIN/UMID_MAX, no
+            # average. The live scraper reports an instant UMID2M reading, so
+            # to make historical humidity usable in the same UMID2M charts
+            # and overlays (e.g. heat index) we derive it as the midpoint of
+            # min/max for that hour.
+            umid_min = to_float(record["UMID_MIN"])
+            umid_max = to_float(record["UMID_MAX"])
+            if umid_min is not None and umid_max is not None:
+                umid_avg = round((umid_min + umid_max) / 2, 1)
+                rows.append(
+                    (
+                        STATION_ID,
+                        observation_at,
+                        "UMID2M",
+                        STATION_NAME,
+                        str(umid_avg),
+                        umid_avg,
+                        "%",
                         downloaded_at,
                         raw_json,
                     )
