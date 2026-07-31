@@ -11,7 +11,8 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from astral import LocationInfo
+import requests
+from astral import LocationInfo, moon
 from astral.sun import sun
 
 import scrape
@@ -21,6 +22,9 @@ DEFAULT_DATABASE_PATH = os.environ.get(
 )
 STATIONS_CONFIG = Path("stations.json")
 DASHBOARD_CONFIG = Path(".dashboard_config.json")
+
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3.5:9b")
 
 st.set_page_config(
     page_title="ARPAV Dashboard",
@@ -1086,11 +1090,36 @@ def build_station_report(station_id: str, station_name: str) -> str:
                 f"massima {last_24h['value_numeric'].max():.1f}°C."
             )
 
+        yesterday_df = temp_df[
+            temp_df["observation_at"].dt.date == (obs_time.date() - timedelta(days=1))
+        ]
+        if not yesterday_df.empty:
+            y_max = yesterday_df.loc[yesterday_df["value_numeric"].idxmax()]
+            lines.append(
+                f"Ieri la massima è stata di {y_max['value_numeric']:.1f}°C "
+                f"alle {y_max['observation_at'].strftime('%H:%M')}."
+            )
+
     humidity_df = df_week[
         (df_week["variable_type"] == "UMID2M") & df_week["value_numeric"].notna()
     ].sort_values("observation_at")
     if not humidity_df.empty:
         lines.append(f"**Umidità**: {humidity_df.iloc[-1]['value_numeric']:.0f}%.")
+
+    if not temp_df.empty and not humidity_df.empty:
+        time_to_latest_temp = (
+            humidity_df["observation_at"] - temp_df.iloc[-1]["observation_at"]
+        ).abs()
+        if time_to_latest_temp.min() <= timedelta(hours=1):
+            closest_humidity = humidity_df.loc[
+                time_to_latest_temp.idxmin(), "value_numeric"
+            ]
+            perceived = heat_index_celsius(
+                temp_df.iloc[-1]["value_numeric"], closest_humidity
+            )
+            muggy_label = describe_muggy_level(perceived)
+            if muggy_label:
+                lines.append(f"**Percepito**: {perceived:.1f}°C ({muggy_label}).")
 
     wind_speed_df = df_week[
         (df_week["variable_type"] == "VVENTO10M") & df_week["value_numeric"].notna()
@@ -1148,6 +1177,74 @@ def build_station_report(station_id: str, station_name: str) -> str:
     return "\n\n".join(lines)
 
 
+NARRATIVE_STYLE_HINTS = [
+    "un breve bollettino colloquiale, come lo racconteresti a un amico",
+    "un tono da cronista locale che osserva il cielo",
+    "uno stile essenziale e diretto, quasi da messaggio vocale",
+    "un tocco leggermente poetico ma sobrio, da chi ama osservare il tempo",
+]
+
+
+def current_narrative_style(cache_ttl_seconds: int = 1800) -> str:
+    """Rotates the narration style roughly once per cache window, so repeated
+    reports don't all read with the same structure."""
+    bucket = int(datetime.now().timestamp() // cache_ttl_seconds)
+    return NARRATIVE_STYLE_HINTS[bucket % len(NARRATIVE_STYLE_HINTS)]
+
+
+@st.cache_data(ttl=1800, show_spinner="Genero il riassunto con l'AI...")
+def generate_narrative_report(
+    structured_report: str,
+    station_name: str,
+    historical_highlights: list[str],
+    sun_context: str,
+    style_hint: str,
+) -> str:
+    """Turn the templated report into a short natural-language summary via Ollama."""
+    extra_context = ""
+    if historical_highlights:
+        extra_context += (
+            "\nRecord/confronti storici (menzionane al massimo uno, solo se "
+            "aggiunge qualcosa di interessante):\n- "
+            + "\n- ".join(historical_highlights)
+        )
+    if sun_context:
+        extra_context += f"\n\nSole e luna:\n{sun_context}"
+
+    prompt = (
+        "Sei un meteorologo che scrive per un pubblico non tecnico. "
+        f"Riscrivi questi dati meteo per la stazione di {station_name} come un "
+        "breve paragrafo discorsivo in italiano (massimo 4-5 frasi), con "
+        f"{style_hint}. Varia la struttura e l'apertura della frase rispetto a "
+        "un classico bollettino: non elencare sempre gli stessi dati nello "
+        "stesso ordine. Puoi citare occasionalmente alba, tramonto o fase "
+        "lunare, o un record storico, se pertinenti e interessanti — non è "
+        "necessario includerli tutti insieme: se un dettaglio non entra in "
+        "modo naturale e chiaro in una frase, omettilo piuttosto che "
+        "forzarlo. Preferisci frasi brevi e comprensibili a frasi lunghe che "
+        "accumulano troppe informazioni insieme. Puoi aggiungere un breve "
+        "commento pratico (es. abbigliamento, ombrello) se pertinente. Non "
+        "inventare numeri, eventi o condizioni (es. siccità, ondate di caldo "
+        "passate, temporali) che non siano esplicitamente presenti nei dati "
+        "forniti: attieniti solo a ciò che è scritto qui sotto. Non usare "
+        "markdown.\n\n"
+        f"Dati:\n{structured_report}{extra_context}"
+    )
+    response = requests.post(
+        f"{OLLAMA_BASE_URL}/api/generate",
+        json={
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "think": False,
+            "options": {"temperature": 0.5},
+        },
+        timeout=90,
+    )
+    response.raise_for_status()
+    return response.json()["response"].strip()
+
+
 def compute_sun_times(lat: float, lon: float, target_date) -> dict:
     """Sunrise, solar noon (culmine) and sunset for a location, plus day/night length."""
     location = LocationInfo(latitude=lat, longitude=lon)
@@ -1202,6 +1299,156 @@ def heat_index_celsius(temp_c, humidity_pct):
     heat_index_f = np.where(use_full_formula, hi_full, hi_simple)
 
     return (heat_index_f - 32) * 5 / 9
+
+
+def describe_muggy_level(heat_index_c: float) -> str | None:
+    """Qualitative Italian label for a heat-index value (NWS caution bands)."""
+    if heat_index_c < 27:
+        return None
+    if heat_index_c < 32:
+        return "afa moderata"
+    if heat_index_c < 39:
+        return "afosa"
+    if heat_index_c < 51:
+        return "molto afosa"
+    return "afa estrema"
+
+
+def get_moon_phase_label(target_date) -> str:
+    """Coarse Italian label for the moon phase on a given date (astral, 0-27.99 scale)."""
+    labels = [
+        "luna nuova",
+        "luna crescente",
+        "primo quarto",
+        "luna gibbosa crescente",
+        "luna piena",
+        "luna gibbosa calante",
+        "ultimo quarto",
+        "luna calante",
+    ]
+    phase = moon.phase(target_date)
+    return labels[int(phase // 3.5) % len(labels)]
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner="Confronto con le serie storiche...")
+def compute_historical_highlights(station_id: str) -> list[str]:
+    """Compare the current week/month against the station's full history and
+    surface only genuinely notable records (gap of several years), so the
+    narrative report has fresh, non-repetitive material to draw from."""
+    HOT_DAY_THRESHOLD = 34.0
+    MIN_RECORD_GAP_YEARS = 3
+
+    conn = get_db_connection()
+    tmax_daily = pd.read_sql_query(
+        """
+        SELECT date(observation_at) AS day, MAX(value_numeric) AS tmax
+        FROM observations
+        WHERE station_id = ? AND variable_type = 'TARIA2M' AND value_numeric IS NOT NULL
+        GROUP BY day
+        """,
+        conn,
+        params=[station_id],
+    )
+    prec_daily = pd.read_sql_query(
+        """
+        SELECT date(observation_at) AS day, SUM(value_numeric) AS prec
+        FROM observations
+        WHERE station_id = ? AND variable_type = 'PREC' AND value_numeric IS NOT NULL
+        GROUP BY day
+        """,
+        conn,
+        params=[station_id],
+    )
+
+    highlights = []
+
+    def most_recent_match(series: pd.Series, current_value: float):
+        matches = series[series >= current_value]
+        return matches.index.max() if not matches.empty else None
+
+    if not tmax_daily.empty:
+        tmax_daily["day"] = pd.to_datetime(tmax_daily["day"])
+        s = tmax_daily.set_index("day")["tmax"].sort_index()
+        rolling_avg = s.rolling(7, min_periods=5).mean()
+        rolling_hot_days = s.rolling(7, min_periods=5).apply(
+            lambda w: (w > HOT_DAY_THRESHOLD).sum()
+        )
+
+        last_date = s.index.max()
+        current_year = last_date.year
+        first_year = s.index.min().year
+        cutoff = last_date - timedelta(days=7)
+        prior_avg = rolling_avg[rolling_avg.index <= cutoff]
+        prior_hot = rolling_hot_days[rolling_hot_days.index <= cutoff]
+
+        current_avg = rolling_avg.get(last_date)
+        if pd.notna(current_avg):
+            match_date = most_recent_match(prior_avg, current_avg)
+            match_year = match_date.year if match_date is not None else first_year
+            if current_year - match_year >= MIN_RECORD_GAP_YEARS:
+                since = (
+                    f"dal {match_year}"
+                    if match_date is not None
+                    else f"dall'inizio delle rilevazioni ({first_year})"
+                )
+                highlights.append(
+                    f"Questa è la settimana più calda {since}, con una "
+                    f"massima media di {current_avg:.1f}°C."
+                )
+
+        current_hot_days = rolling_hot_days.get(last_date)
+        if pd.notna(current_hot_days) and current_hot_days >= 3:
+            match_date = most_recent_match(prior_hot, current_hot_days)
+            match_year = match_date.year if match_date is not None else first_year
+            if current_year - match_year >= MIN_RECORD_GAP_YEARS:
+                since = (
+                    f"dal {match_year}"
+                    if match_date is not None
+                    else f"dall'inizio delle rilevazioni ({first_year})"
+                )
+                highlights.append(
+                    f"{int(current_hot_days)} giorni con massima sopra "
+                    f"{HOT_DAY_THRESHOLD:.0f}°C negli ultimi 7 giorni: "
+                    f"non succedeva {since}."
+                )
+
+    if not prec_daily.empty:
+        prec_daily["day"] = pd.to_datetime(prec_daily["day"])
+        p = prec_daily.set_index("day")["prec"].sort_index()
+        today = p.index.max()
+        current_year = today.year
+        month_start = today.replace(day=1)
+        days_elapsed = (today - month_start).days + 1
+        current_total = p[(p.index >= month_start) & (p.index <= today)].sum()
+
+        candidate_years = []
+        for year in sorted(p.index.year.unique()):
+            if year == current_year:
+                continue
+            y_month_start = datetime(year, today.month, 1)
+            y_cutoff = y_month_start + timedelta(days=days_elapsed - 1)
+            mask = (p.index >= y_month_start) & (p.index <= y_cutoff)
+            if not mask.any():
+                continue
+            if p[mask].sum() >= current_total:
+                candidate_years.append(year)
+
+        other_years = [y for y in p.index.year.unique() if y != current_year]
+        if other_years:
+            first_year = min(other_years)
+            match_year = max(candidate_years) if candidate_years else first_year
+            if current_year - match_year >= MIN_RECORD_GAP_YEARS:
+                since = (
+                    f"dal {match_year}"
+                    if candidate_years
+                    else f"dall'inizio delle rilevazioni ({first_year})"
+                )
+                highlights.append(
+                    f"Con {current_total:.0f} mm finora, questo mese è il più "
+                    f"piovoso {since} (confronto sullo stesso periodo del mese)."
+                )
+
+    return highlights
 
 
 def duration_weighted_mean(times: list, values: list, period_end) -> float | None:
@@ -1515,22 +1762,68 @@ with tab0:
             )
 
         if home_row is not None:
-            st.divider()
-            st.subheader(f"Report — {home_row['station_name']}")
-            st.markdown(
-                build_station_report(
-                    home_row["station_id"], home_row["station_name"]
-                )
+            has_coords = pd.notna(home_row["latitudine"]) and pd.notna(
+                home_row["longitudine"]
             )
-
-            if pd.notna(home_row["latitudine"]) and pd.notna(home_row["longitudine"]):
-                st.divider()
-                st.subheader("☀️ Sole e durata del giorno")
+            sun_times = None
+            sun_context = ""
+            if has_coords:
                 sun_times = compute_sun_times(
                     home_row["latitudine"],
                     home_row["longitudine"],
                     datetime.now().date(),
                 )
+                moon_label = get_moon_phase_label(datetime.now().date())
+                sun_context = (
+                    f"Alba alle {sun_times['sunrise'].strftime('%H:%M')}, "
+                    f"culmine alle {sun_times['noon'].strftime('%H:%M')}, "
+                    f"tramonto alle {sun_times['sunset'].strftime('%H:%M')} "
+                    f"(giorno di {format_timedelta_hm(sun_times['day_length'])}). "
+                    f"Fase lunare: {moon_label}."
+                )
+
+            st.divider()
+            report_header_col, report_toggle_col = st.columns([3, 1])
+            with report_header_col:
+                st.subheader(f"Report — {home_row['station_name']}")
+            with report_toggle_col:
+                use_ai_report = st.toggle("✨ Riassunto AI", key="use_ai_report")
+
+            structured_report = build_station_report(
+                home_row["station_id"], home_row["station_name"]
+            )
+            if use_ai_report:
+                try:
+                    historical_highlights = compute_historical_highlights(
+                        home_row["station_id"]
+                    )
+                    st.markdown(
+                        generate_narrative_report(
+                            structured_report,
+                            home_row["station_name"],
+                            historical_highlights,
+                            sun_context,
+                            current_narrative_style(),
+                        )
+                    )
+                except requests.exceptions.Timeout:
+                    st.caption(
+                        "⚠️ Ollama sta impiegando troppo tempo a rispondere "
+                        "(modello ancora in caricamento?), mostro il report "
+                        "standard."
+                    )
+                except requests.exceptions.RequestException:
+                    st.caption(
+                        f"⚠️ Ollama non raggiungibile su {OLLAMA_BASE_URL}, "
+                        "mostro il report standard."
+                    )
+                    st.markdown(structured_report)
+            else:
+                st.markdown(structured_report)
+
+            if has_coords:
+                st.divider()
+                st.subheader("☀️ Sole e durata del giorno")
 
                 sunrise_col, noon_col, sunset_col = st.columns(3)
                 sunrise_col.metric("🌅 Sorge", sun_times["sunrise"].strftime("%H:%M"))
