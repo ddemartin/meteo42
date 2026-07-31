@@ -262,6 +262,15 @@ def get_observations_df(
         df["observation_at"] = pd.to_datetime(df["observation_at"])
     return df
 
+def period_floor(timestamps: pd.Series, frequency: str) -> pd.Series:
+    """Floor timestamps to the start of their day/week(Mon)/month period."""
+    if frequency == "daily":
+        return timestamps.dt.floor("D")
+    if frequency == "weekly":
+        return timestamps.dt.to_period("W-MON").dt.start_time
+    return timestamps.dt.to_period("M").dt.to_timestamp()
+
+
 def aggregate_observations(
     observations: pd.DataFrame,
     frequency: str,
@@ -300,14 +309,7 @@ def aggregate_observations(
             ]
         )
 
-    def period_of(timestamps: pd.Series) -> pd.Series:
-        if frequency == "daily":
-            return timestamps.dt.floor("D")
-        if frequency == "weekly":
-            return timestamps.dt.to_period("W-MON").dt.start_time
-        return timestamps.dt.to_period("M").dt.to_timestamp()
-
-    numeric["period"] = period_of(numeric["observation_at"])
+    numeric["period"] = period_floor(numeric["observation_at"], frequency)
 
     min_max = numeric.groupby(["period", "station_name"], as_index=False)[
         "value_numeric"
@@ -324,7 +326,7 @@ def aggregate_observations(
             ["period", "station_name", "minimum", "average", "maximum"]
         ]
 
-    daily_weighted["period"] = period_of(daily_weighted["day"])
+    daily_weighted["period"] = period_floor(daily_weighted["day"], frequency)
     averages = (
         daily_weighted.groupby(["period", "station_name"], as_index=False)[
             "value_numeric"
@@ -380,6 +382,169 @@ def build_range_figure(
         hovermode="x unified",
         height=430,
         legend_title="Stazione / statistica",
+        legend=MOBILE_LEGEND,
+        margin=MOBILE_CHART_MARGIN,
+    )
+    return fig
+
+
+def aggregate_extremes_bands(
+    observations: pd.DataFrame,
+    frequency: str,
+) -> pd.DataFrame:
+    """For each station/period, the range of daily highs and the range of
+    daily lows (not just one overall min and one overall max): e.g. "in July
+    the daily highs ranged 28-37°C and the daily lows ranged 17-28°C". Built
+    from per-day min/max, so a single unusually hot or cold day doesn't
+    collapse the whole period into one flat min/max line."""
+    columns = [
+        "period",
+        "station_name",
+        "highs_min",
+        "highs_max",
+        "lows_min",
+        "lows_max",
+        "average",
+    ]
+    required_columns = {"station_name", "observation_at", "value_numeric"}
+    if observations.empty or not required_columns.issubset(observations.columns):
+        return pd.DataFrame(columns=columns)
+
+    if frequency not in {"daily", "weekly", "monthly"}:
+        raise ValueError("frequency must be 'daily', 'weekly' or 'monthly'")
+
+    clean = observations.dropna(subset=["observation_at", "value_numeric"]).copy()
+    if clean.empty:
+        return pd.DataFrame(columns=columns)
+
+    clean["day"] = clean["observation_at"].dt.floor("D")
+    daily_extremes = clean.groupby(["day", "station_name"], as_index=False)[
+        "value_numeric"
+    ].agg(day_min="min", day_max="max")
+    daily_extremes["period"] = period_floor(daily_extremes["day"], frequency)
+
+    bands = daily_extremes.groupby(["period", "station_name"], as_index=False).agg(
+        highs_min=("day_max", "min"),
+        highs_max=("day_max", "max"),
+        lows_min=("day_min", "min"),
+        lows_max=("day_min", "max"),
+    )
+    for column in ["highs_min", "highs_max", "lows_min", "lows_max"]:
+        bands[column] = bands[column].round(1)
+
+    daily_weighted = compute_daily_weighted_averages(observations)
+    if daily_weighted.empty:
+        bands["average"] = float("nan")
+        return bands.sort_values(["period", "station_name"])[columns]
+
+    daily_weighted["period"] = period_floor(daily_weighted["day"], frequency)
+    averages = (
+        daily_weighted.groupby(["period", "station_name"], as_index=False)[
+            "value_numeric"
+        ]
+        .mean()
+        .rename(columns={"value_numeric": "average"})
+    )
+    averages["average"] = averages["average"].round(1)
+
+    return bands.merge(
+        averages, on=["period", "station_name"], how="left"
+    ).sort_values(["period", "station_name"])[columns]
+
+
+def hex_to_rgba(hex_color: str, alpha: float) -> str:
+    hex_color = hex_color.lstrip("#")
+    r, g, b = (int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r},{g},{b},{alpha})"
+
+
+def build_extremes_band_figure(
+    bands: pd.DataFrame,
+    title: str,
+    unit: str,
+) -> go.Figure:
+    """Two shaded bands per station (range of daily highs, range of daily
+    lows) plus the time-weighted average as a centerline."""
+    fig = go.Figure()
+    station_names = sorted(bands["station_name"].unique())
+    colors = px.colors.qualitative.Plotly
+
+    for station_index, station_name in enumerate(station_names):
+        color = colors[station_index % len(colors)]
+        station_df = bands[
+            bands["station_name"] == station_name
+        ].sort_values("period")
+        if station_df.empty:
+            continue
+
+        # Highs band: invisible upper edge, then lower edge filled up to it.
+        fig.add_trace(
+            go.Scatter(
+                x=station_df["period"],
+                y=station_df["highs_max"],
+                mode="lines",
+                line=dict(color=color, width=0),
+                legendgroup=station_name,
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=station_df["period"],
+                y=station_df["highs_min"],
+                mode="lines",
+                line=dict(color=color, width=1),
+                fill="tonexty",
+                fillcolor=hex_to_rgba(color, 0.25),
+                name=f"{station_name} - Massime (range)",
+                legendgroup=station_name,
+            )
+        )
+
+        # Lows band: same trick, independent of the highs band above it.
+        fig.add_trace(
+            go.Scatter(
+                x=station_df["period"],
+                y=station_df["lows_max"],
+                mode="lines",
+                line=dict(color=color, width=0),
+                legendgroup=station_name,
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=station_df["period"],
+                y=station_df["lows_min"],
+                mode="lines",
+                line=dict(color=color, width=1),
+                fill="tonexty",
+                fillcolor=hex_to_rgba(color, 0.15),
+                name=f"{station_name} - Minime (range)",
+                legendgroup=station_name,
+            )
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=station_df["period"],
+                y=station_df["average"],
+                mode="lines",
+                line=dict(color=color, width=2),
+                name=f"{station_name} - Media",
+                legendgroup=station_name,
+            )
+        )
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Periodo",
+        yaxis_title=unit or "Valore",
+        hovermode="x unified",
+        height=430,
+        legend_title="Stazione / serie",
         legend=MOBILE_LEGEND,
         margin=MOBILE_CHART_MARGIN,
     )
@@ -596,24 +761,45 @@ def build_precipitation_totals_figure(
     return fig
 
 
-YEAR_DASH_CYCLE = ["solid", "dash", "dot", "dashdot", "longdash", "longdashdot"]
+# Dash only encodes station: a handful of values, so it stays legible. Year is
+# encoded by color instead (see build_yearly_precipitation_comparison) because
+# with a decade-plus of history, cycling dash styles for "year" repeats after
+# a few and different years become visually indistinguishable.
+STATION_DASH_CYCLE = ["solid", "dash", "dot", "dashdot"]
+
+
+# Distinct hues (red/green/blue/yellow/...) rather than shades of one color:
+# with a decade-plus of years on screen, a light-to-dark single-hue ramp puts
+# adjacent years a few shades apart and they become impossible to tell apart.
+# Light24 has 24 clearly distinct colors, enough for years through 2033.
+# Indexed from a fixed anchor year (not from position within the currently
+# filtered years) so a given year always gets the same color regardless of
+# which other years/stations are selected alongside it.
+YEAR_COLOR_ANCHOR = 2000
+YEAR_COLOR_PALETTE = px.colors.qualitative.Light24
+
+
+def year_qualitative_color(year: int) -> str:
+    return YEAR_COLOR_PALETTE[
+        (year - YEAR_COLOR_ANCHOR) % len(YEAR_COLOR_PALETTE)
+    ]
 
 
 def build_yearly_precipitation_comparison(prec_df: pd.DataFrame) -> go.Figure:
     """Cumulative precipitation per calendar year, aligned on a Jan-Dec axis so
     different years can be compared station by station."""
     fig = go.Figure()
-    colors = px.colors.qualitative.Plotly
     station_names = sorted(prec_df["station_name"].unique())
+    current_year = datetime.now().year
 
     for station_index, station_name in enumerate(station_names):
-        color = colors[station_index % len(colors)]
+        dash = STATION_DASH_CYCLE[station_index % len(STATION_DASH_CYCLE)]
         station_df = prec_df[
             prec_df["station_name"] == station_name
         ].sort_values("observation_at")
 
         years = sorted(station_df["observation_at"].dt.year.unique())
-        for year_index, year in enumerate(years):
+        for year in years:
             year_df = station_df[
                 station_df["observation_at"].dt.year == year
             ].copy()
@@ -630,15 +816,24 @@ def build_yearly_precipitation_comparison(prec_df: pd.DataFrame) -> go.Figure:
                     "day": year_df["observation_at"].dt.day,
                 }
             )
-            dash = YEAR_DASH_CYCLE[year_index % len(YEAR_DASH_CYCLE)]
+            is_current_year = year == current_year
+            trace_name = (
+                f"{station_name} - {year}"
+                if len(station_names) > 1
+                else str(year)
+            )
 
             fig.add_trace(
                 go.Scatter(
                     x=reference_date,
                     y=year_df["cumulata"],
-                    name=f"{station_name} - {year}",
+                    name=trace_name,
                     mode="lines",
-                    line=dict(color=color, dash=dash),
+                    line=dict(
+                        color=year_qualitative_color(year),
+                        dash=dash,
+                        width=3 if is_current_year else 1.5,
+                    ),
                     legendgroup=station_name,
                 )
             )
@@ -1852,40 +2047,38 @@ with tab4:
                     str(unit_values.iloc[0]) if not unit_values.empty else ""
                 )
 
-                weekly_aggregation = aggregate_observations(
+                weekly_bands = aggregate_extremes_bands(
                     yearly_var_df, "weekly"
                 )
-                monthly_aggregation = aggregate_observations(
+                monthly_bands = aggregate_extremes_bands(
                     yearly_var_df, "monthly"
                 )
 
-                weekly_col, monthly_col = st.columns(2)
-                with weekly_col:
-                    if weekly_aggregation.empty:
-                        st.info("Nessun dato settimanale disponibile")
-                    else:
-                        st.plotly_chart(
-                            build_range_figure(
-                                weekly_aggregation,
-                                f"{var_label(selected_yearly_var)} - andamento settimanale",
-                                yearly_var_unit,
-                            ),
-                            use_container_width=True,
-                            config=PLOTLY_CONFIG,
-                        )
-                with monthly_col:
-                    if monthly_aggregation.empty:
-                        st.info("Nessun dato mensile disponibile")
-                    else:
-                        st.plotly_chart(
-                            build_range_figure(
-                                monthly_aggregation,
-                                f"{var_label(selected_yearly_var)} - andamento mensile",
-                                yearly_var_unit,
-                            ),
-                            use_container_width=True,
-                            config=PLOTLY_CONFIG,
-                        )
+                if weekly_bands.empty:
+                    st.info("Nessun dato settimanale disponibile")
+                else:
+                    st.plotly_chart(
+                        build_extremes_band_figure(
+                            weekly_bands,
+                            f"{var_label(selected_yearly_var)} - andamento settimanale",
+                            yearly_var_unit,
+                        ),
+                        use_container_width=True,
+                        config=PLOTLY_CONFIG,
+                    )
+
+                if monthly_bands.empty:
+                    st.info("Nessun dato mensile disponibile")
+                else:
+                    st.plotly_chart(
+                        build_extremes_band_figure(
+                            monthly_bands,
+                            f"{var_label(selected_yearly_var)} - andamento mensile",
+                            yearly_var_unit,
+                        ),
+                        use_container_width=True,
+                        config=PLOTLY_CONFIG,
+                    )
             else:
                 st.info(
                     "Nessuna variabile numerica disponibile per il periodo/"
