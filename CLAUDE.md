@@ -45,9 +45,20 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.meteo42.dashboard.pl
 | dominio inesistente | il nodo non è host approvato del servizio | vedi `autoApprovers` qui sotto, poi `drain` + `advertise` |
 | `502` dal nome del servizio | il servizio c'è, il dashboard no | `launchctl kickstart -k gui/$(id -u)/com.meteo42.dashboard` |
 | configurazione sparita | `serve` l'ha persa | rieseguire il comando qui sopra |
+| non si raggiunge **solo dal browser** di un telefono, mentre le altre app della tailnet vanno | Chrome ha un resolver DoH suo che scavalca MagicDNS, e per lui `.ts.net` non esiste | Chrome → Impostazioni → Privacy e sicurezza → **Usa DNS sicuro** → disattiva. Stesso effetto, ma su tutto il telefono, da Impostazioni Android → Rete → **DNS privato** |
 
 `tailscale serve status` che dice `No serve config` **non è un guasto**: i
 servizi si vedono solo con `tailscale serve status --json`.
+
+Provare col VIP nudo (`https://100.115.29.169/`) **non dimostra niente**:
+`serve` sceglie il certificato dall'SNI, un URL con l'IP non ne manda, e il TLS
+fallisce comunque con "il sito non può fornire una connessione protetta" anche a
+servizio perfettamente funzionante. Attenzione che `curl --resolve nome:443:IP`
+l'SNI invece lo manda, quindi risponde `200` dove il browser fallisce: sembra
+un'asimmetria tra due dispositivi e non lo è. Per separare trasporto e DNS,
+l'unica lettura valida del test sull'IP è *quale* errore dà — un errore TLS
+significa che il TCP è passato, quindi tunnel, routing del VIP e ACL funzionano
+e il sospetto va spostato sulla risoluzione del nome.
 
 Nella ACL servono due cose distinte, ed è la confusione tra le due che è
 costata più tempo in fase di configurazione. Il **grant** decide chi può
