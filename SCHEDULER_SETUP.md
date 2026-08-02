@@ -1,128 +1,88 @@
-# Setup Scheduler su Mac Mini
+# Setup dei servizi launchd su Mac mini
 
-## Passo 1: Configurare il file plist
+Due servizi, due file: `com.meteo42.scraper.plist` scarica i dati,
+`com.meteo42.dashboard.plist` tiene su la dashboard. Entrambi contengono il
+segnaposto `/path/to/project`, da sostituire al momento dell'installazione.
 
-Modifica `com.meteo42.scraper.plist` e sostituisci `/path/to/project` con il percorso effettivo del progetto.
-
-Ad esempio, se il progetto è in `/Users/davide/Projects/meteo42`:
+## Passo 1: Sostituire i percorsi
 
 ```bash
-sed -i '' 's|/path/to/project|/Users/davide/Projects/meteo42|g' com.meteo42.scraper.plist
+sed -i '' "s|/path/to/project|$PWD|g" com.meteo42.scraper.plist com.meteo42.dashboard.plist
 ```
 
-## Passo 2: Creare cartella log
+I plist puntano a `.venv/bin/python` e `.venv/bin/streamlit`, non al Python di
+sistema: le dipendenze di `requirements.txt` stanno nel venv.
+
+## Passo 2: Creare la cartella dei log
 
 ```bash
-mkdir -p ~/Projects/meteo42/logs
+mkdir -p logs
 ```
 
-## Passo 3: Installare il launchd agent
+## Passo 3: Installare e caricare
 
 ```bash
-cp com.meteo42.scraper.plist ~/Library/LaunchAgents/
-```
-
-## Passo 4: Carica il servizio
-
-```bash
-launchctl load ~/Library/LaunchAgents/com.meteo42.scraper.plist
+cp com.meteo42.scraper.plist com.meteo42.dashboard.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.meteo42.scraper.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.meteo42.dashboard.plist
 ```
 
 ## Comandi utili
 
-**Verificare se è caricato:**
+**Verificare se sono caricati:**
 ```bash
 launchctl list | grep meteo42
 ```
 
 **Visualizzare i log:**
 ```bash
-tail -f ~/Projects/meteo42/logs/scraper.log
-tail -f ~/Projects/meteo42/logs/scraper_error.log
+tail -f logs/scraper.log logs/scraper_error.log
+tail -f logs/dashboard.log logs/dashboard_error.log
 ```
 
-**Fermare il servizio:**
+**Riavviare dopo una modifica al codice:**
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.meteo42.scraper.plist
+launchctl kickstart -k gui/$(id -u)/com.meteo42.dashboard
 ```
 
-**Riavviare il servizio:**
+**Riavviare dopo una modifica al plist** — qui `kickstart` non basta, rilegge la
+copia che launchd tiene in cache:
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.meteo42.scraper.plist
-launchctl load ~/Library/LaunchAgents/com.meteo42.scraper.plist
+launchctl bootout    gui/$(id -u)/com.meteo42.dashboard
+launchctl bootstrap  gui/$(id -u) ~/Library/LaunchAgents/com.meteo42.dashboard.plist
 ```
 
-## Configurare l'intervallo di esecuzione
-
-Nel file `com.meteo42.scraper.plist`, modifica la sezione:
-
-```xml
-<key>StartInterval</key>
-<integer>300</integer>  <!-- 300 secondi = 5 minuti -->
+**Fermare un servizio:**
+```bash
+launchctl bootout gui/$(id -u)/com.meteo42.scraper
 ```
 
-Opzioni comuni:
-- `60` = 1 minuto
-- `300` = 5 minuti
-- `600` = 10 minuti
-- `1800` = 30 minuti
-- `3600` = 1 ora
+## Cadenza dello scraper
 
-## Eseguire lo scraper con l'ambiente virtuale
-
-Se usi il venv, modifica le `ProgramArguments` nel plist:
+Lo scraper gira **una volta all'ora**, al minuto zero:
 
 ```xml
-<key>ProgramArguments</key>
-<array>
-    <string>/Users/davide/Projects/meteo42/.venv/bin/python</string>
-    <string>/Users/davide/Projects/meteo42/scrape.py</string>
-</array>
-```
-
-## Eseguire la dashboard Streamlit in background
-
-Crea un altro file `com.meteo42.dashboard.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
+<key>StartCalendarInterval</key>
 <dict>
-    <key>Label</key>
-    <string>com.meteo42.dashboard</string>
-
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Users/davide/Projects/meteo42/.venv/bin/streamlit</string>
-        <string>run</string>
-        <string>/Users/davide/Projects/meteo42/dashboard.py</string>
-        <string>--server.port=8501</string>
-        <string>--server.address=0.0.0.0</string>
-    </array>
-
-    <key>WorkingDirectory</key>
-    <string>/Users/davide/Projects/meteo42</string>
-
-    <key>StandardOutPath</key>
-    <string>/Users/davide/Projects/meteo42/logs/dashboard.log</string>
-
-    <key>StandardErrorPath</key>
-    <string>/Users/davide/Projects/meteo42/logs/dashboard_error.log</string>
-
-    <key>RunAtLoad</key>
-    <true/>
-
-    <key>KeepAlive</key>
-    <true/>
+	<key>Minute</key>
+	<integer>0</integer>
 </dict>
-</plist>
 ```
 
-Installa con:
-```bash
-cp com.meteo42.dashboard.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.meteo42.dashboard.plist
-```
+È la cadenza con cui ARPAV pubblica le misure: interrogarla più spesso
+scaricherebbe le stesse righe. Per un intervallo fisso invece che un orario si
+usa `StartInterval` con i secondi (`<integer>300</integer>` per cinque minuti),
+ma le due chiavi non vanno messe insieme.
 
-Accedi dalla rete a `http://[IP_MAC]:8501`
+`KeepAlive` è `false` perché è un lavoro periodico che finisce, non un server —
+al contrario della dashboard, che ha `true` e viene rilanciata se muore.
+
+## Accesso alla dashboard
+
+La dashboard ascolta su `127.0.0.1:8501` e **non è raggiungibile dalla rete
+locale in chiaro**: si arriva da <https://meteo42.tail1a68b4.ts.net/>, che è un
+servizio Tailscale. Configurazione, diagnostica e comandi stanno in
+[CLAUDE.md](CLAUDE.md).
+
+Per riaprirla sulla rete di casa, `--server.address=0.0.0.0` nel plist, seguito
+dal ciclo `bootout` + `bootstrap` qui sopra.

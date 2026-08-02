@@ -7,15 +7,18 @@
 
 	<key>ProgramArguments</key>
 	<array>
-		<string>/usr/bin/python3</string>
+		<string>/path/to/project/.venv/bin/python</string>
 		<string>/path/to/project/scrape.py</string>
 	</array>
 
 	<key>WorkingDirectory</key>
 	<string>/path/to/project</string>
 
-	<key>StartInterval</key>
-	<integer>300</integer>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>
 
 	<key>StandardOutPath</key>
 	<string>/path/to/project/logs/scraper.log</string>

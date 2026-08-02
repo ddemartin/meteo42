@@ -58,9 +58,15 @@ streamlit run dashboard.py
 
 La dashboard sarà disponibile su `http://localhost:8501`
 
+In produzione sul Mac mini non si lancia a mano: gira come servizio launchd e si
+raggiunge da <https://meteo42.tail1a68b4.ts.net/> — dentro la tailnet, anche da
+fuori casa, senza nulla esposto su Internet.
+
 ## Scheduling su macOS
 
-Vedi [SCHEDULER_SETUP.md](SCHEDULER_SETUP.md) per configurare l'esecuzione automatica dello scraper con `launchd`.
+Vedi [SCHEDULER_SETUP.md](SCHEDULER_SETUP.md) per installare i due servizi
+`launchd` (scraper e dashboard), e [CLAUDE.md](CLAUDE.md) per l'accesso
+Tailscale e la relativa diagnostica.
 
 ## Database Schema
 
