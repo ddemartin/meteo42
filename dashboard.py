@@ -5,7 +5,7 @@ import sqlite3
 import json
 import base64
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import streamlit as st
 import numpy as np
@@ -96,6 +96,11 @@ WIND_COMPASS_LABELS = [
 
 HOME_TIMEZONE = "Europe/Rome"
 UTC_TIMEZONE = "UTC"
+# ARPAV marca le osservazioni in ora solare (UTC+1) tutto l'anno, non in UTC e
+# non in ora locale: nelle notti di cambio ora il database non ha né il buco di
+# marzo né l'ora doppia di ottobre, e il picco di RADSOL cade sempre nello
+# stesso slot orario a gennaio come a giugno.
+DB_TIMEZONE = timezone(timedelta(hours=1))
 ARPAV_RADAR_API_URL = "https://api.arpa.veneto.it/REST/v1/radar_imgs_geo"
 ARPAV_RADAR_PAGE_URL = (
     "https://www.arpa.veneto.it/dati-ambientali/dati-in-diretta/"
@@ -115,8 +120,17 @@ MOBILE_CHART_MARGIN = dict(b=110)
 PLOTLY_CONFIG = {"responsive": True}
 
 
-def utc_series_to_local(series: pd.Series) -> pd.Series:
-    """Interpret database timestamps as UTC and display them in local time."""
+def observation_series_to_local(series: pd.Series) -> pd.Series:
+    """Interpret observation timestamps as ora solare and show them local."""
+    return (
+        pd.to_datetime(series)
+        .dt.tz_localize(DB_TIMEZONE)
+        .dt.tz_convert(HOME_TIMEZONE)
+    )
+
+
+def offset_series_to_local(series: pd.Series) -> pd.Series:
+    """Convert timestamps already carrying their own UTC offset to local."""
     return pd.to_datetime(series, utc=True).dt.tz_convert(HOME_TIMEZONE)
 
 
@@ -284,7 +298,9 @@ def get_observations_df(
             unit,
             downloaded_at
         FROM observations
-        WHERE observation_at >= datetime('now', '-' || ? || ' days')
+        -- `now` è UTC, le osservazioni sono in ora solare: senza `+1 hour` la
+        -- finestra sarebbe spostata di un'ora.
+        WHERE observation_at >= datetime('now', '+1 hour', '-' || ? || ' days')
     """
     params = [days]
 
@@ -300,9 +316,9 @@ def get_observations_df(
 
     df = pd.read_sql_query(query, conn, params=params)
     if not df.empty:
-        df["observation_at"] = utc_series_to_local(df["observation_at"])
+        df["observation_at"] = observation_series_to_local(df["observation_at"])
         if "downloaded_at" in df.columns:
-            df["downloaded_at"] = utc_series_to_local(df["downloaded_at"])
+            df["downloaded_at"] = offset_series_to_local(df["downloaded_at"])
     return df
 
 def period_floor(timestamps: pd.Series, frequency: str) -> pd.Series:
@@ -1022,7 +1038,7 @@ def get_latest_temperatures(station_ids: list) -> pd.DataFrame:
     """
     df = pd.read_sql_query(query, conn, params=station_ids)
     if not df.empty:
-        df["observation_at"] = utc_series_to_local(df["observation_at"])
+        df["observation_at"] = observation_series_to_local(df["observation_at"])
     return df
 
 
@@ -1522,6 +1538,9 @@ def compute_historical_highlights(station_id: str) -> list[str]:
     MIN_RECORD_GAP_YEARS = 3
 
     conn = get_db_connection()
+    # I giorni qui sono quelli dell'ora solare, non quelli locali: rileggere e
+    # convertire in pandas sedici anni di dati a 10 minuti costerebbe troppo, e
+    # il giorno in ora solare è comunque la convenzione climatologica ARPAV.
     tmax_daily = pd.read_sql_query(
         """
         SELECT date(observation_at) AS day, MAX(value_numeric) AS tmax
