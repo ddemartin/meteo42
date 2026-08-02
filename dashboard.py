@@ -3,6 +3,7 @@ import math
 import os
 import sqlite3
 import json
+import base64
 from pathlib import Path
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -12,8 +13,13 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import requests
-from astral import LocationInfo, moon
-from astral.sun import sun
+from astral import LocationInfo, Observer, moon
+from astral.sun import elevation as sun_elevation, sun
+
+try:
+    import ephem
+except ImportError:  # Keep the rest of the dashboard usable during upgrades.
+    ephem = None
 
 import scrape
 
@@ -89,6 +95,12 @@ WIND_COMPASS_LABELS = [
 ]
 
 HOME_TIMEZONE = "Europe/Rome"
+UTC_TIMEZONE = "UTC"
+ARPAV_RADAR_API_URL = "https://api.arpa.veneto.it/REST/v1/radar_imgs_geo"
+ARPAV_RADAR_PAGE_URL = (
+    "https://www.arpa.veneto.it/dati-ambientali/dati-in-diretta/"
+    "radar/mosaico-radar-meteo"
+)
 
 # Horizontal legend below the plot area: a right-side vertical legend eats
 # fixed width from the chart, which crushes the plot on narrow/mobile screens.
@@ -101,6 +113,31 @@ MOBILE_LEGEND = dict(
 )
 MOBILE_CHART_MARGIN = dict(b=110)
 PLOTLY_CONFIG = {"responsive": True}
+
+
+def utc_series_to_local(series: pd.Series) -> pd.Series:
+    """Interpret database timestamps as UTC and display them in local time."""
+    return pd.to_datetime(series, utc=True).dt.tz_convert(HOME_TIMEZONE)
+
+
+@st.cache_data(ttl=5 * 60, show_spinner=False)
+def get_latest_arpav_radar() -> dict | None:
+    """Fetch the latest official ARPAV North-East radar mosaic."""
+    response = requests.get(ARPAV_RADAR_API_URL, timeout=20)
+    response.raise_for_status()
+    frames = response.json().get("data", [])
+    if not frames:
+        return None
+
+    latest = max(frames, key=lambda frame: frame.get("date", ""))
+    image_data = latest.get("image")
+    if not image_data:
+        return None
+    observed_at = pd.to_datetime(latest["date"], utc=True).tz_convert(HOME_TIMEZONE)
+    return {
+        "image": base64.b64decode(image_data),
+        "observed_at": observed_at,
+    }
 
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -263,16 +300,21 @@ def get_observations_df(
 
     df = pd.read_sql_query(query, conn, params=params)
     if not df.empty:
-        df["observation_at"] = pd.to_datetime(df["observation_at"])
+        df["observation_at"] = utc_series_to_local(df["observation_at"])
+        if "downloaded_at" in df.columns:
+            df["downloaded_at"] = utc_series_to_local(df["downloaded_at"])
     return df
 
 def period_floor(timestamps: pd.Series, frequency: str) -> pd.Series:
     """Floor timestamps to the start of their day/week(Mon)/month period."""
+    # Aggregations should use local calendar boundaries. Drop only the timezone
+    # metadata after conversion, preserving the Europe/Rome wall-clock values.
+    local_times = timestamps.dt.tz_localize(None)
     if frequency == "daily":
-        return timestamps.dt.floor("D")
+        return local_times.dt.floor("D")
     if frequency == "weekly":
-        return timestamps.dt.to_period("W-MON").dt.start_time
-    return timestamps.dt.to_period("M").dt.to_timestamp()
+        return local_times.dt.to_period("W-MON").dt.start_time
+    return local_times.dt.to_period("M").dt.to_timestamp()
 
 
 def aggregate_observations(
@@ -373,8 +415,8 @@ def build_range_figure(
                     x=station_df["period"],
                     y=station_df[metric],
                     name=f"{station_name} - {label}",
-                    mode="lines+markers",
-                    line=dict(color=color, dash=dash),
+                    mode="lines",
+                    line=dict(color=color, dash=dash, width=2.5),
                     legendgroup=station_name,
                 )
             )
@@ -691,8 +733,8 @@ def render_line_chart(var_df: pd.DataFrame, var: str) -> None:
             "value_numeric": f"{var_label(var)} ({var_df['unit'].iloc[0] if len(var_df) > 0 and var_df['unit'].notna().any() else ''})",
             "station_name": "Stazione",
         },
-        markers=True,
     )
+    fig.update_traces(line_width=2.5)
     fig.update_layout(
         hovermode="x unified",
         height=400,
@@ -720,12 +762,14 @@ def aggregate_precipitation_totals(
         return pd.DataFrame(columns=["period", "station_name", "totale"])
 
     if frequency == "weekly":
+        local_times = numeric["observation_at"].dt.tz_localize(None)
         numeric["period"] = (
-            numeric["observation_at"].dt.to_period("W-MON").dt.start_time
+            local_times.dt.to_period("W-MON").dt.start_time
         )
     else:
+        local_times = numeric["observation_at"].dt.tz_localize(None)
         numeric["period"] = (
-            numeric["observation_at"].dt.to_period("M").dt.to_timestamp()
+            local_times.dt.to_period("M").dt.to_timestamp()
         )
 
     return (
@@ -946,8 +990,6 @@ def find_nearest_stations(stations_df: pd.DataFrame) -> pd.DataFrame:
                 "station_name": nearest["station_name"],
                 "latitudine": nearest["latitudine"],
                 "longitudine": nearest["longitudine"],
-                "distanza_km": distances.loc[nearest_index],
-                "is_home": False,
             }
         )
     return pd.DataFrame(
@@ -958,8 +1000,6 @@ def find_nearest_stations(stations_df: pd.DataFrame) -> pd.DataFrame:
             "station_name",
             "latitudine",
             "longitudine",
-            "distanza_km",
-            "is_home",
         ],
     )
 
@@ -982,66 +1022,8 @@ def get_latest_temperatures(station_ids: list) -> pd.DataFrame:
     """
     df = pd.read_sql_query(query, conn, params=station_ids)
     if not df.empty:
-        df["observation_at"] = pd.to_datetime(df["observation_at"])
+        df["observation_at"] = utc_series_to_local(df["observation_at"])
     return df
-
-
-def build_overview_map(points_df: pd.DataFrame) -> go.Figure:
-    """Map of the nearest station to each Veneto capoluogo, plus the home station."""
-    fig = go.Figure()
-
-    capoluoghi = points_df[~points_df["is_home"]]
-    home = points_df[points_df["is_home"]]
-
-    if not capoluoghi.empty:
-        fig.add_trace(
-            go.Scattermap(
-                lat=capoluoghi["latitudine"],
-                lon=capoluoghi["longitudine"],
-                mode="markers+text",
-                marker=dict(size=14, color="#2E86AB"),
-                text=capoluoghi["label"],
-                textposition="top center",
-                hovertext=[
-                    f"{row.station_name} — {row.temp_text}"
-                    for row in capoluoghi.itertuples()
-                ],
-                hoverinfo="text",
-                name="Capoluoghi",
-            )
-        )
-
-    if not home.empty:
-        fig.add_trace(
-            go.Scattermap(
-                lat=home["latitudine"],
-                lon=home["longitudine"],
-                mode="markers+text",
-                marker=dict(size=18, color="#E63946"),
-                text=home["label"],
-                textposition="top center",
-                hovertext=[
-                    f"{row.station_name} — {row.temp_text}"
-                    for row in home.itertuples()
-                ],
-                hoverinfo="text",
-                name="Casa",
-            )
-        )
-
-    fig.update_layout(
-        autosize=True,
-        uirevision="overview-map",
-        map=dict(
-            style="open-street-map",
-            center=dict(lat=45.6, lon=11.9),
-            zoom=7.2,
-        ),
-        height=520,
-        margin=dict(l=0, r=0, t=36, b=0),
-        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="left", x=0),
-    )
-    return fig
 
 
 def build_station_report(station_id: str, station_name: str) -> str:
@@ -1121,6 +1103,15 @@ def build_station_report(station_id: str, station_name: str) -> str:
             if muggy_label:
                 lines.append(f"**Percepito**: {perceived:.1f}°C ({muggy_label}).")
 
+            wet_bulb = wet_bulb_temperature_celsius(
+                temp_df.iloc[-1]["value_numeric"], closest_humidity
+            )
+            wet_bulb_risk = describe_wet_bulb_risk(wet_bulb)
+            lines.append(
+                f"**Bulbo umido stimato**: {wet_bulb:.1f}°C "
+                f"({wet_bulb_risk})."
+            )
+
     wind_speed_df = df_week[
         (df_week["variable_type"] == "VVENTO10M") & df_week["value_numeric"].notna()
     ].sort_values("observation_at")
@@ -1155,7 +1146,13 @@ def build_station_report(station_id: str, station_name: str) -> str:
             variable_type="PREC",
         )
         if not prec_year_df.empty:
-            month_start = datetime(datetime.now().year, datetime.now().month, 1)
+            now_local = datetime.now(ZoneInfo(HOME_TIMEZONE))
+            month_start = datetime(
+                now_local.year,
+                now_local.month,
+                1,
+                tzinfo=ZoneInfo(HOME_TIMEZONE),
+            )
             month_total = prec_year_df[
                 prec_year_df["observation_at"] >= month_start
             ]["value_numeric"].sum()
@@ -1261,6 +1258,160 @@ def compute_sun_times(lat: float, lon: float, target_date) -> dict:
     }
 
 
+def build_sun_altitude_figure(lat: float, lon: float, target_date) -> go.Figure:
+    """Solar altitude through the local civil day, including twilight."""
+    tzinfo = ZoneInfo(HOME_TIMEZONE)
+    observer = Observer(latitude=lat, longitude=lon)
+    day_start = datetime.combine(target_date, datetime.min.time(), tzinfo=tzinfo)
+    moments = pd.date_range(
+        day_start,
+        day_start + timedelta(days=1),
+        freq="5min",
+        inclusive="left",
+    )
+    altitudes = [sun_elevation(observer, moment.to_pydatetime()) for moment in moments]
+
+    fig = go.Figure()
+    fig.add_hrect(y0=-18, y1=-12, fillcolor="#172554", opacity=0.20, line_width=0)
+    fig.add_hrect(y0=-12, y1=-6, fillcolor="#4338CA", opacity=0.13, line_width=0)
+    fig.add_hrect(y0=-6, y1=0, fillcolor="#F59E0B", opacity=0.10, line_width=0)
+    fig.add_trace(
+        go.Scatter(
+            x=moments,
+            y=np.maximum(altitudes, 0),
+            mode="lines",
+            line=dict(width=0),
+            fill="tozeroy",
+            fillcolor="rgba(251,191,36,0.22)",
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=moments,
+            y=altitudes,
+            mode="lines",
+            line=dict(color="#F59E0B", width=3),
+            name="Altezza del Sole",
+            hovertemplate="%{x|%H:%M} · %{y:.1f}°<extra></extra>",
+        )
+    )
+
+    now_local = datetime.now(tzinfo)
+    if now_local.date() == target_date:
+        current_altitude = sun_elevation(observer, now_local)
+        fig.add_trace(
+            go.Scatter(
+                x=[now_local],
+                y=[current_altitude],
+                mode="markers",
+                marker=dict(color="#F97316", size=10, line=dict(color="white", width=2)),
+                name="Adesso",
+                hovertemplate="Adesso · %{y:.1f}°<extra></extra>",
+            )
+        )
+
+    fig.add_hline(y=0, line_color="rgba(100,116,139,0.55)", line_width=1)
+    fig.update_layout(
+        title="Il percorso del Sole oggi",
+        xaxis=dict(title=None, tickformat="%H:%M", dtick=3 * 60 * 60 * 1000),
+        yaxis=dict(title="Altezza sull'orizzonte", ticksuffix="°", range=[-18, 70]),
+        hovermode="x",
+        height=350,
+        showlegend=False,
+        margin=dict(l=45, r=20, t=55, b=40),
+    )
+    return fig
+
+
+def get_moon_details(lat: float, lon: float, target_date) -> dict:
+    """Moon phase, estimated illumination, rise and set in local time."""
+    observer = Observer(latitude=lat, longitude=lon)
+    tzinfo = ZoneInfo(HOME_TIMEZONE)
+    phase_day = moon.phase(target_date)
+    illumination = (1 - math.cos(2 * math.pi * phase_day / 28)) / 2 * 100
+
+    def safe_event(event_func):
+        try:
+            return event_func(observer, date=target_date, tzinfo=tzinfo)
+        except (ValueError, moon.NoTransit):
+            return None
+
+    return {
+        "phase": get_moon_phase_label(target_date),
+        "phase_day": phase_day,
+        "illumination": illumination,
+        "moonrise": safe_event(moon.moonrise),
+        "moonset": safe_event(moon.moonset),
+    }
+
+
+def moon_phase_icon(phase_day: float) -> str:
+    icons = ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"]
+    return icons[int(phase_day // 3.5) % len(icons)]
+
+
+def get_visible_planets(lat: float, lon: float, target_date) -> pd.DataFrame:
+    """Rank naked-eye planets observable during the current local night."""
+    columns = ["Pianeta", "Visibilità", "Ora migliore", "Altezza", "Magnitudine"]
+    if ephem is None:
+        return pd.DataFrame(columns=columns)
+
+    tzinfo = ZoneInfo(HOME_TIMEZONE)
+    today_times = compute_sun_times(lat, lon, target_date)
+    now_local = datetime.now(tzinfo)
+    if now_local.date() == target_date and now_local < today_times["sunrise"]:
+        previous_day = target_date - timedelta(days=1)
+        start = compute_sun_times(lat, lon, previous_day)["sunset"]
+        end = today_times["sunrise"]
+    else:
+        start = today_times["sunset"]
+        end = compute_sun_times(lat, lon, target_date + timedelta(days=1))["sunrise"]
+
+    moments = pd.date_range(start, end, freq="10min")
+    planet_types = [
+        ("Mercurio", ephem.Mercury),
+        ("Venere", ephem.Venus),
+        ("Marte", ephem.Mars),
+        ("Giove", ephem.Jupiter),
+        ("Saturno", ephem.Saturn),
+    ]
+    rows = []
+    for italian_name, planet_type in planet_types:
+        candidates = []
+        for moment in moments:
+            local_moment = moment.to_pydatetime()
+            observer = ephem.Observer()
+            observer.lat = str(lat)
+            observer.lon = str(lon)
+            observer.date = local_moment.astimezone(ZoneInfo(UTC_TIMEZONE)).replace(
+                tzinfo=None
+            )
+            sun_body = ephem.Sun(observer)
+            planet = planet_type(observer)
+            altitude = math.degrees(float(planet.alt))
+            sun_altitude = math.degrees(float(sun_body.alt))
+            if altitude >= 10 and sun_altitude <= -6 and float(planet.mag) <= 6:
+                candidates.append((altitude, local_moment, float(planet.mag)))
+
+        if not candidates:
+            continue
+        altitude, best_time, magnitude = max(candidates, key=lambda item: item[0])
+        midpoint = start + (end - start) / 2
+        visibility = "sera" if best_time <= midpoint else "mattino"
+        rows.append(
+            {
+                "Pianeta": italian_name,
+                "Visibilità": visibility,
+                "Ora migliore": best_time.strftime("%H:%M"),
+                "Altezza": f"{altitude:.0f}°",
+                "Magnitudine": f"{magnitude:.1f}",
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
+
+
 def format_timedelta_hm(delta: timedelta) -> str:
     total_minutes = int(delta.total_seconds() // 60)
     hours, minutes = divmod(total_minutes, 60)
@@ -1299,6 +1450,38 @@ def heat_index_celsius(temp_c, humidity_pct):
     heat_index_f = np.where(use_full_formula, hi_full, hi_simple)
 
     return (heat_index_f - 32) * 5 / 9
+
+
+def wet_bulb_temperature_celsius(temp_c, humidity_pct):
+    """Estimate wet-bulb temperature at sea-level pressure.
+
+    Uses the Stull (2011) approximation, valid for air temperatures from
+    -20 to 50°C and relative humidity from 5 to 99%. Inputs outside the
+    humidity range are clipped so bad sensor values cannot break the chart.
+    """
+    humidity_pct = np.clip(humidity_pct, 5, 99)
+    return (
+        temp_c * np.arctan(0.151977 * np.sqrt(humidity_pct + 8.313659))
+        + np.arctan(temp_c + humidity_pct)
+        - np.arctan(humidity_pct - 1.676331)
+        + 0.00391838 * humidity_pct**1.5 * np.arctan(0.023101 * humidity_pct)
+        - 4.686035
+    )
+
+
+def describe_wet_bulb_risk(wet_bulb_c: float) -> str:
+    """Prudent heat-stress bands for estimated wet-bulb temperature.
+
+    These are contextual warning bands, not clinical thresholds: activity,
+    sunshine, wind, acclimatisation, age and health can change the actual risk.
+    """
+    if wet_bulb_c < 26:
+        return "rischio contenuto"
+    if wet_bulb_c < 28:
+        return "attenzione"
+    if wet_bulb_c < 30:
+        return "pericolo"
+    return "pericolo estremo"
 
 
 def describe_muggy_level(heat_index_c: float) -> str | None:
@@ -1558,7 +1741,6 @@ def render_temperature_chart_with_overlays(
         show_weighted_avg = st.checkbox(
             "📅 Mostra media ponderata giornaliera", key="show_weighted_avg_overlay"
         )
-
     fig = px.line(
         temp_df,
         x="observation_at",
@@ -1571,8 +1753,8 @@ def render_temperature_chart_with_overlays(
             "value_numeric": f"{var_label('TARIA2M')} (°C)",
             "station_name": "Stazione",
         },
-        markers=True,
     )
+    fig.update_traces(line_width=2.5)
 
     if show_heat_index:
         humidity_df = full_df[
@@ -1630,10 +1812,9 @@ def render_temperature_chart_with_overlays(
                 go.Scatter(
                     x=weighted["day"] + timedelta(hours=12),
                     y=weighted["weighted_average"],
-                    mode="lines+markers",
+                    mode="lines",
                     name=f"{station_name} - Media pond. giornaliera",
                     line=dict(color=color_map.get(station_name), dash="dash", width=3),
-                    marker=dict(size=8, symbol="diamond"),
                 )
             )
 
@@ -1644,6 +1825,282 @@ def render_temperature_chart_with_overlays(
         margin=MOBILE_CHART_MARGIN,
     )
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+
+
+def render_wet_bulb_chart(
+    full_df: pd.DataFrame,
+    temp_df: pd.DataFrame,
+    chart_stations: list,
+    station_id_to_name: dict,
+) -> None:
+    """Render estimated wet-bulb temperature as a standalone risk chart."""
+    humidity_df = full_df[
+        (full_df["variable_type"] == "UMID2M") & full_df["value_numeric"].notna()
+    ]
+    if humidity_df.empty:
+        return
+
+    station_names = sorted(temp_df["station_name"].unique())
+    colors = px.colors.qualitative.Plotly
+    color_map = {
+        name: colors[index % len(colors)] for index, name in enumerate(station_names)
+    }
+    fig = go.Figure()
+
+    for station_id in chart_stations:
+        station_name = station_id_to_name.get(station_id)
+        station_temp = temp_df[
+            temp_df["station_id"] == station_id
+        ].sort_values("observation_at")
+        station_hum = humidity_df[
+            humidity_df["station_id"] == station_id
+        ].sort_values("observation_at")
+        if station_name is None or station_temp.empty or station_hum.empty:
+            continue
+
+        merged = pd.merge_asof(
+            station_temp[["observation_at", "value_numeric"]].rename(
+                columns={"value_numeric": "temperatura"}
+            ),
+            station_hum[["observation_at", "value_numeric"]].rename(
+                columns={"value_numeric": "umidita"}
+            ),
+            on="observation_at",
+            tolerance=pd.Timedelta("30min"),
+            direction="nearest",
+        ).dropna(subset=["umidita"])
+        if merged.empty:
+            continue
+
+        merged["bulbo_umido"] = wet_bulb_temperature_celsius(
+            merged["temperatura"], merged["umidita"]
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=merged["observation_at"],
+                y=merged["bulbo_umido"],
+                customdata=merged[["temperatura", "umidita"]],
+                mode="lines",
+                name=station_name,
+                line=dict(color=color_map.get(station_name), width=2.5),
+                hovertemplate=(
+                    "Bulbo umido: %{y:.1f}°C"
+                    "<br>Temperatura aria: %{customdata[0]:.1f}°C"
+                    "<br>Umidità: %{customdata[1]:.0f}%<extra></extra>"
+                ),
+            )
+        )
+
+    if not fig.data:
+        return
+
+    risk_bands = [
+        (0, 26, "rgba(76,175,80,0.08)"),
+        (26, 28, "rgba(255,193,7,0.13)"),
+        (28, 30, "rgba(255,152,0,0.15)"),
+        (30, 35, "rgba(244,67,54,0.15)"),
+    ]
+    for lower, upper, color in risk_bands:
+        fig.add_hrect(
+            y0=lower,
+            y1=upper,
+            fillcolor=color,
+            line_width=0,
+            layer="below",
+        )
+
+    fig.update_layout(
+        title="Stress termico - temperatura di bulbo umido stimata",
+        xaxis_title="Data/Ora",
+        yaxis=dict(title="Bulbo umido (°C Tw)", range=[0, 35]),
+        hovermode="x unified",
+        height=400,
+        legend=MOBILE_LEGEND,
+        margin=MOBILE_CHART_MARGIN,
+    )
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+    st.caption(
+        "Fasce indicative: verde <26°C, attenzione 26–28°C, pericolo "
+        "28–30°C, pericolo estremo ≥30°C. Stima in ombra da temperatura e "
+        "umidità: non è il WBGT e non include sole, vento o attività fisica."
+    )
+
+
+def merge_temperature_humidity(observations: pd.DataFrame) -> pd.DataFrame:
+    """Match temperature and humidity readings from the same station in time."""
+    temperature = observations[
+        (observations["variable_type"] == "TARIA2M")
+        & observations["value_numeric"].notna()
+    ].sort_values("observation_at")
+    humidity = observations[
+        (observations["variable_type"] == "UMID2M")
+        & observations["value_numeric"].notna()
+    ].sort_values("observation_at")
+    if temperature.empty or humidity.empty:
+        return pd.DataFrame(
+            columns=["observation_at", "temperatura", "umidita"]
+        )
+
+    return pd.merge_asof(
+        temperature[["observation_at", "value_numeric"]].rename(
+            columns={"value_numeric": "temperatura"}
+        ),
+        humidity[["observation_at", "value_numeric"]].rename(
+            columns={"value_numeric": "umidita"}
+        ),
+        on="observation_at",
+        tolerance=pd.Timedelta("30min"),
+        direction="nearest",
+    ).dropna(subset=["umidita"])
+
+
+def build_compact_timeseries(
+    data: pd.DataFrame,
+    value_column: str,
+    title: str,
+    yaxis_title: str,
+    color: str,
+    yaxis_range: list | None = None,
+) -> go.Figure:
+    """Small, consistent line chart for the 72-hour overview grid."""
+    fig = go.Figure(
+        go.Scatter(
+            x=data["observation_at"],
+            y=data[value_column],
+            mode="lines",
+            line=dict(color=color, width=2.5),
+            hovertemplate=f"%{{x|%d/%m %H:%M}} · %{{y:.1f}} {yaxis_title}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title=title,
+        xaxis=dict(title=None, tickformat="%d/%m\n%H:%M"),
+        yaxis=dict(title=yaxis_title, range=yaxis_range),
+        hovermode="x",
+        height=310,
+        showlegend=False,
+        margin=dict(l=45, r=15, t=55, b=45),
+    )
+    return fig
+
+
+def render_overview_72h_charts(station_id: str) -> None:
+    """Render temperature, humidity and heat-stress indicators for 72 hours."""
+    observations = get_observations_df(station_id=station_id, days=3)
+    if observations.empty:
+        return
+
+    temperature = observations[
+        (observations["variable_type"] == "TARIA2M")
+        & observations["value_numeric"].notna()
+    ].sort_values("observation_at")
+    humidity = observations[
+        (observations["variable_type"] == "UMID2M")
+        & observations["value_numeric"].notna()
+    ].sort_values("observation_at")
+    matched = merge_temperature_humidity(observations)
+    if not matched.empty:
+        matched["bulbo_umido"] = wet_bulb_temperature_celsius(
+            matched["temperatura"], matched["umidita"]
+        )
+        matched["indice_calore"] = heat_index_celsius(
+            matched["temperatura"], matched["umidita"]
+        )
+
+    st.divider()
+    st.subheader("📈 Ultime 72 ore")
+    first_row_left, first_row_right = st.columns(2)
+    with first_row_left:
+        if not temperature.empty:
+            st.plotly_chart(
+                build_compact_timeseries(
+                    temperature,
+                    "value_numeric",
+                    "Temperatura dell’aria",
+                    "°C",
+                    "#EF4444",
+                ),
+                use_container_width=True,
+                config=PLOTLY_CONFIG,
+            )
+    with first_row_right:
+        if not humidity.empty:
+            st.plotly_chart(
+                build_compact_timeseries(
+                    humidity,
+                    "value_numeric",
+                    "Umidità relativa",
+                    "%",
+                    "#0EA5E9",
+                    [0, 100],
+                ),
+                use_container_width=True,
+                config=PLOTLY_CONFIG,
+            )
+
+    if matched.empty:
+        st.caption(
+            "Bulbo umido e indice di calore non disponibili: servono letture "
+            "abbinate di temperatura e umidità."
+        )
+        return
+
+    second_row_left, second_row_right = st.columns(2)
+    with second_row_left:
+        wet_bulb_fig = build_compact_timeseries(
+            matched,
+            "bulbo_umido",
+            "Bulbo umido stimato",
+            "°C Tw",
+            "#2563EB",
+            [0, 35],
+        )
+        for lower, upper, color in [
+            (0, 26, "rgba(76,175,80,0.08)"),
+            (26, 28, "rgba(255,193,7,0.13)"),
+            (28, 30, "rgba(255,152,0,0.15)"),
+            (30, 35, "rgba(244,67,54,0.15)"),
+        ]:
+            wet_bulb_fig.add_hrect(
+                y0=lower, y1=upper, fillcolor=color, line_width=0, layer="below"
+            )
+        st.plotly_chart(
+            wet_bulb_fig,
+            use_container_width=True,
+            config=PLOTLY_CONFIG,
+        )
+
+    with second_row_right:
+        heat_index_fig = build_compact_timeseries(
+            matched,
+            "indice_calore",
+            "Indice di calore",
+            "°C",
+            "#F97316",
+        )
+        heat_index_fig.add_hrect(
+            y0=27, y1=32, fillcolor="rgba(255,193,7,0.10)", line_width=0,
+            layer="below",
+        )
+        heat_index_fig.add_hrect(
+            y0=32, y1=39, fillcolor="rgba(255,152,0,0.12)", line_width=0,
+            layer="below",
+        )
+        heat_index_fig.add_hrect(
+            y0=39, y1=51, fillcolor="rgba(244,67,54,0.13)", line_width=0,
+            layer="below",
+        )
+        st.plotly_chart(
+            heat_index_fig,
+            use_container_width=True,
+            config=PLOTLY_CONFIG,
+        )
+
+    st.caption(
+        "Orari locali. Bulbo umido stimato e indice di calore sono calcolati "
+        "abbinando le letture entro 30 minuti; l’indice di calore descrive "
+        "condizioni in ombra."
+    )
 
 
 # Tabs
@@ -1682,8 +2139,6 @@ with tab0:
                     "station_name": home_row["station_name"],
                     "latitudine": home_row["latitudine"],
                     "longitudine": home_row["longitudine"],
-                    "distanza_km": float("nan"),
-                    "is_home": True,
                 }
             ]
         )
@@ -1697,7 +2152,7 @@ with tab0:
         st.info(
             "Nessuna stazione con coordinate disponibili: aggiungi "
             "latitudine/longitudine in station_metadata per abilitare "
-            "la mappa."
+            "la panoramica territoriale."
         )
     else:
         latest_temps = get_latest_temperatures(
@@ -1709,16 +2164,25 @@ with tab0:
         overview_points["temp_text"] = overview_points["value_numeric"].apply(
             lambda v: f"{v:.1f}°C" if pd.notna(v) else "n/d"
         )
-        overview_points["distanza_km"] = overview_points["distanza_km"].round(1)
+        radar_col, info_col = st.columns([2, 1])
 
-        map_col, info_col = st.columns([2, 1])
-
-        with map_col:
-            st.plotly_chart(
-                build_overview_map(overview_points),
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-            )
+        with radar_col:
+            st.write("### 🌧️ Radar precipitazioni Nord-Est")
+            try:
+                radar = get_latest_arpav_radar()
+                if radar is None:
+                    st.info("Immagine radar temporaneamente non disponibile.")
+                else:
+                    st.image(radar["image"], width="stretch")
+                    st.caption(
+                        "Mosaico ARPAV aggiornato alle "
+                        f"{radar['observed_at'].strftime('%H:%M del %d/%m/%Y')} "
+                        "(ora locale). Intensità: verde debole, giallo moderata, "
+                        "rosso/viola forte."
+                    )
+            except requests.exceptions.RequestException:
+                st.info("Radar ARPAV momentaneamente non raggiungibile.")
+            st.link_button("Apri il radar ARPAV", ARPAV_RADAR_PAGE_URL)
 
         with info_col:
             if home_row is not None:
@@ -1748,12 +2212,10 @@ with tab0:
 
             st.dataframe(
                 overview_points[
-                    ["label", "station_name", "distanza_km", "temp_text"]
+                    ["label", "temp_text"]
                 ].rename(
                     columns={
                         "label": "Zona",
-                        "station_name": "Stazione",
-                        "distanza_km": "Distanza (km)",
                         "temp_text": "Temperatura",
                     }
                 ),
@@ -1768,12 +2230,13 @@ with tab0:
             sun_times = None
             sun_context = ""
             if has_coords:
+                local_today = datetime.now(ZoneInfo(HOME_TIMEZONE)).date()
                 sun_times = compute_sun_times(
                     home_row["latitudine"],
                     home_row["longitudine"],
-                    datetime.now().date(),
+                    local_today,
                 )
-                moon_label = get_moon_phase_label(datetime.now().date())
+                moon_label = get_moon_phase_label(local_today)
                 sun_context = (
                     f"Alba alle {sun_times['sunrise'].strftime('%H:%M')}, "
                     f"culmine alle {sun_times['noon'].strftime('%H:%M')}, "
@@ -1821,24 +2284,78 @@ with tab0:
             else:
                 st.markdown(structured_report)
 
+            render_overview_72h_charts(home_row["station_id"])
+
             if has_coords:
                 st.divider()
-                st.subheader("☀️ Sole e durata del giorno")
+                st.subheader("🌌 Cielo di oggi")
 
                 sunrise_col, noon_col, sunset_col = st.columns(3)
                 sunrise_col.metric("🌅 Sorge", sun_times["sunrise"].strftime("%H:%M"))
                 noon_col.metric("🕛 Culmina", sun_times["noon"].strftime("%H:%M"))
                 sunset_col.metric("🌇 Tramonta", sun_times["sunset"].strftime("%H:%M"))
 
-                day_col, night_col = st.columns(2)
-                day_col.metric(
-                    "☀️ Durata del giorno",
-                    format_timedelta_hm(sun_times["day_length"]),
+                st.plotly_chart(
+                    build_sun_altitude_figure(
+                        home_row["latitudine"],
+                        home_row["longitudine"],
+                        local_today,
+                    ),
+                    use_container_width=True,
+                    config=PLOTLY_CONFIG,
                 )
-                night_col.metric(
-                    "🌙 Durata della notte",
-                    format_timedelta_hm(sun_times["night_length"]),
+
+                moon_details = get_moon_details(
+                    home_row["latitudine"],
+                    home_row["longitudine"],
+                    local_today,
                 )
+                moon_col, planets_col = st.columns([1, 2])
+                with moon_col:
+                    st.write("#### Luna")
+                    st.metric(
+                        f"{moon_phase_icon(moon_details['phase_day'])} Fase",
+                        moon_details["phase"].capitalize(),
+                        f"{moon_details['illumination']:.0f}% illuminata",
+                    )
+                    moonrise = moon_details["moonrise"]
+                    moonset = moon_details["moonset"]
+                    st.write(
+                        f"**Sorge:** {moonrise.strftime('%H:%M') if moonrise else '—'}  "
+                        f"\n**Tramonta:** {moonset.strftime('%H:%M') if moonset else '—'}"
+                    )
+                    st.caption(
+                        f"Giorno: {format_timedelta_hm(sun_times['day_length'])} · "
+                        f"Notte: {format_timedelta_hm(sun_times['night_length'])}"
+                    )
+
+                with planets_col:
+                    st.write("#### Pianeti visibili a occhio nudo")
+                    visible_planets = get_visible_planets(
+                        home_row["latitudine"],
+                        home_row["longitudine"],
+                        local_today,
+                    )
+                    if ephem is None:
+                        st.info(
+                            "Installa le dipendenze aggiornate per abilitare "
+                            "il calcolo dei pianeti."
+                        )
+                    elif visible_planets.empty:
+                        st.info(
+                            "Nessun pianeta maggiore supera 10° con cielo "
+                            "sufficientemente scuro nella notte corrente."
+                        )
+                    else:
+                        st.dataframe(
+                            visible_planets,
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                    st.caption(
+                        "Stima per Mogliano: Sole sotto −6°, pianeta almeno "
+                        "10° sopra l’orizzonte; nuvole e ostacoli locali non inclusi."
+                    )
 
 
 # TAB 1: Data View
@@ -2067,6 +2584,9 @@ with tab3:
                         station_id: name for name, station_id in stations_dict.items()
                     }
                     render_temperature_chart_with_overlays(
+                        df, taria2m_df, chart_stations, station_id_to_name
+                    )
+                    render_wet_bulb_chart(
                         df, taria2m_df, chart_stations, station_id_to_name
                     )
                 rendered_vars.add("TARIA2M")
