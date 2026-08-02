@@ -117,7 +117,24 @@ MOBILE_LEGEND = dict(
     x=0.5,
 )
 MOBILE_CHART_MARGIN = dict(b=110)
-PLOTLY_CONFIG = {"responsive": True}
+PLOTLY_CONFIG = {
+    "responsive": True,
+    "displayModeBar": False,
+    "scrollZoom": False,
+    "doubleClick": False,
+}
+
+
+def render_chart(fig, **kwargs) -> None:
+    """Show a read-only chart. Su schermo touch lo scroll della pagina finisce
+    facilmente dentro al grafico e lo zooma o lo trascina, senza un modo ovvio
+    di tornare indietro: gli assi sono bloccati e la barra degli strumenti è
+    nascosta. Il tocco su un punto continua a mostrare il tooltip."""
+    fig.update_xaxes(fixedrange=True)
+    fig.update_yaxes(fixedrange=True)
+    fig.update_layout(dragmode=False)
+    kwargs.setdefault("width", "stretch")
+    st.plotly_chart(fig, config=PLOTLY_CONFIG, **kwargs)
 
 
 def observation_series_to_local(series: pd.Series) -> pd.Series:
@@ -757,7 +774,7 @@ def render_line_chart(var_df: pd.DataFrame, var: str) -> None:
         legend=MOBILE_LEGEND,
         margin=MOBILE_CHART_MARGIN,
     )
-    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+    render_chart(fig)
 
 
 def aggregate_precipitation_totals(
@@ -957,7 +974,7 @@ def render_precipitation_cumulative(chart_stations: list) -> None:
         legend=MOBILE_LEGEND,
         margin=MOBILE_CHART_MARGIN,
     )
-    st.plotly_chart(cumulative_fig, use_container_width=True, config=PLOTLY_CONFIG)
+    render_chart(cumulative_fig)
 
 
 def get_stations_from_db():
@@ -1843,7 +1860,7 @@ def render_temperature_chart_with_overlays(
         legend=MOBILE_LEGEND,
         margin=MOBILE_CHART_MARGIN,
     )
-    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+    render_chart(fig)
 
 
 def render_wet_bulb_chart(
@@ -1937,7 +1954,7 @@ def render_wet_bulb_chart(
         legend=MOBILE_LEGEND,
         margin=MOBILE_CHART_MARGIN,
     )
-    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+    render_chart(fig)
     st.caption(
         "Fasce indicative: verde <26°C, attenzione 26–28°C, pericolo "
         "28–30°C, pericolo estremo ≥30°C. Stima in ombra da temperatura e "
@@ -2031,7 +2048,7 @@ def render_overview_72h_charts(station_id: str) -> None:
     first_row_left, first_row_right = st.columns(2)
     with first_row_left:
         if not temperature.empty:
-            st.plotly_chart(
+            render_chart(
                 build_compact_timeseries(
                     temperature,
                     "value_numeric",
@@ -2039,12 +2056,10 @@ def render_overview_72h_charts(station_id: str) -> None:
                     "°C",
                     "#EF4444",
                 ),
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
             )
     with first_row_right:
         if not humidity.empty:
-            st.plotly_chart(
+            render_chart(
                 build_compact_timeseries(
                     humidity,
                     "value_numeric",
@@ -2053,8 +2068,6 @@ def render_overview_72h_charts(station_id: str) -> None:
                     "#0EA5E9",
                     [0, 100],
                 ),
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
             )
 
     if matched.empty:
@@ -2083,10 +2096,8 @@ def render_overview_72h_charts(station_id: str) -> None:
             wet_bulb_fig.add_hrect(
                 y0=lower, y1=upper, fillcolor=color, line_width=0, layer="below"
             )
-        st.plotly_chart(
+        render_chart(
             wet_bulb_fig,
-            use_container_width=True,
-            config=PLOTLY_CONFIG,
         )
 
     with second_row_right:
@@ -2109,10 +2120,8 @@ def render_overview_72h_charts(station_id: str) -> None:
             y0=39, y1=51, fillcolor="rgba(244,67,54,0.13)", line_width=0,
             layer="below",
         )
-        st.plotly_chart(
+        render_chart(
             heat_index_fig,
-            use_container_width=True,
-            config=PLOTLY_CONFIG,
         )
 
     st.caption(
@@ -2238,7 +2247,7 @@ with tab0:
                         "temp_text": "Temperatura",
                     }
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -2314,14 +2323,12 @@ with tab0:
                 noon_col.metric("🕛 Culmina", sun_times["noon"].strftime("%H:%M"))
                 sunset_col.metric("🌇 Tramonta", sun_times["sunset"].strftime("%H:%M"))
 
-                st.plotly_chart(
+                render_chart(
                     build_sun_altitude_figure(
                         home_row["latitudine"],
                         home_row["longitudine"],
                         local_today,
                     ),
-                    use_container_width=True,
-                    config=PLOTLY_CONFIG,
                 )
 
                 moon_details = get_moon_details(
@@ -2368,7 +2375,7 @@ with tab0:
                     else:
                         st.dataframe(
                             visible_planets,
-                            use_container_width=True,
+                            width="stretch",
                             hide_index=True,
                         )
                     st.caption(
@@ -2435,7 +2442,7 @@ with tab1:
     if not df.empty:
         st.dataframe(
             df.sort_values("observation_at", ascending=False),
-            use_container_width=True,
+            width="stretch",
         )
         st.info(
             f"Total records: {len(df)}"
@@ -2638,15 +2645,13 @@ with tab3:
                     str(unit_values.iloc[0]) if not unit_values.empty else ""
                 )
 
-                st.plotly_chart(
+                render_chart(
                     build_wind_figure(
                         speed_df,
                         direction_df,
                         var_label(speed_var),
                         speed_unit,
                     ),
-                    use_container_width=True,
-                    config=PLOTLY_CONFIG,
                 )
                 rendered_vars.add(speed_var)
                 rendered_vars.add(direction_var)
@@ -2660,10 +2665,8 @@ with tab3:
                 & df["value_numeric"].notna()
             ]
             if not soil_df.empty:
-                st.plotly_chart(
+                render_chart(
                     build_soil_figure(soil_df),
-                    use_container_width=True,
-                    config=PLOTLY_CONFIG,
                 )
                 rendered_vars.update(SOIL_VARIABLES)
 
@@ -2759,27 +2762,23 @@ with tab3:
                     if daily_aggregation.empty:
                         st.info("Nessun dato giornaliero disponibile")
                     else:
-                        st.plotly_chart(
+                        render_chart(
                             build_range_figure(
                                 daily_aggregation,
                                 f"{var_label(selected_aggregation_var)} - andamento giornaliero",
                                 aggregation_unit,
                             ),
-                            use_container_width=True,
-                            config=PLOTLY_CONFIG,
                         )
                 with monthly_col:
                     if monthly_aggregation.empty:
                         st.info("Nessun dato mensile disponibile")
                     else:
-                        st.plotly_chart(
+                        render_chart(
                             build_range_figure(
                                 monthly_aggregation,
                                 f"{var_label(selected_aggregation_var)} - andamento mensile",
                                 aggregation_unit,
                             ),
-                            use_container_width=True,
-                            config=PLOTLY_CONFIG,
                         )
         else:
             st.warning("Nessun dato disponibile per il periodo selezionato")
@@ -2889,27 +2888,23 @@ with tab4:
                 if weekly_bands.empty:
                     st.info("Nessun dato settimanale disponibile")
                 else:
-                    st.plotly_chart(
+                    render_chart(
                         build_extremes_band_figure(
                             weekly_bands,
                             f"{var_label(selected_yearly_var)} - andamento settimanale",
                             yearly_var_unit,
                         ),
-                        use_container_width=True,
-                        config=PLOTLY_CONFIG,
                     )
 
                 if monthly_bands.empty:
                     st.info("Nessun dato mensile disponibile")
                 else:
-                    st.plotly_chart(
+                    render_chart(
                         build_extremes_band_figure(
                             monthly_bands,
                             f"{var_label(selected_yearly_var)} - andamento mensile",
                             yearly_var_unit,
                         ),
-                        use_container_width=True,
-                        config=PLOTLY_CONFIG,
                     )
             else:
                 st.info(
@@ -2939,23 +2934,19 @@ with tab4:
                     if weekly_totals.empty:
                         st.info("Nessun totale settimanale disponibile")
                     else:
-                        st.plotly_chart(
+                        render_chart(
                             build_precipitation_totals_figure(
                                 weekly_totals, "Precipitazione settimanale"
                             ),
-                            use_container_width=True,
-                            config=PLOTLY_CONFIG,
                         )
                 with monthly_prec_col:
                     if monthly_totals.empty:
                         st.info("Nessun totale mensile disponibile")
                     else:
-                        st.plotly_chart(
+                        render_chart(
                             build_precipitation_totals_figure(
                                 monthly_totals, "Precipitazione mensile"
                             ),
-                            use_container_width=True,
-                            config=PLOTLY_CONFIG,
                         )
 
                 # Year-over-year comparison always looks at full history,
@@ -2967,8 +2958,6 @@ with tab4:
                     prec_history_df["station_id"].isin(yearly_stations)
                 ]
                 if not prec_history_df.empty:
-                    st.plotly_chart(
+                    render_chart(
                         build_yearly_precipitation_comparison(prec_history_df),
-                        use_container_width=True,
-                        config=PLOTLY_CONFIG,
                     )
