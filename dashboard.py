@@ -4,6 +4,10 @@ import os
 import sqlite3
 import json
 import base64
+import html
+import re
+import xml.etree.ElementTree as ET
+from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -13,6 +17,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import requests
+from PIL import Image, ImageDraw
 from astral import LocationInfo, Observer, moon
 from astral.sun import elevation as sun_elevation, sun
 
@@ -45,12 +50,12 @@ OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3.5:9b")
 
 st.set_page_config(
-    page_title="ARPAV Dashboard",
+    page_title="Meteo42 dashboard",
     page_icon="🌤️",
     layout="wide",
 )
 
-st.title("🌤️ ARPAV Meteo Dashboard")
+st.title("🌤️ Meteo42 dashboard")
 
 VARIABLE_LABELS = {
     "TARIA2M": "Temperatura aria (2m)",
@@ -118,6 +123,12 @@ ARPAV_RADAR_PAGE_URL = (
     "https://www.arpa.veneto.it/dati-ambientali/dati-in-diretta/"
     "radar/mosaico-radar-meteo"
 )
+ARPAV_FORECAST_URL = (
+    "https://meteo.arpa.veneto.it/meteo/bollettini/it/xml/"
+    "bollettino_utenti.xml"
+)
+ARPAV_FORECAST_BULLETIN_ID = "MV"
+ARPAV_FORECAST_PAGE_URL = "https://meteo.arpa.veneto.it/?lang=it&page=MV"
 
 # Horizontal legend below the plot area: a right-side vertical legend eats
 # fixed width from the chart, which crushes the plot on narrow/mobile screens.
@@ -181,6 +192,192 @@ def get_latest_arpav_radar() -> dict | None:
         "image": base64.b64decode(image_data),
         "observed_at": observed_at,
     }
+
+
+def _bulletin_plain_text(raw_text: str) -> str:
+    """Turn the small HTML fragment in the XML feed into safe plain text."""
+    decoded = html.unescape(raw_text or "")
+    decoded = re.sub(r"<br\s*/?>", "\n", decoded, flags=re.IGNORECASE)
+    decoded = re.sub(r"<[^>]+>", "", decoded)
+    return "\n".join(line.strip() for line in decoded.splitlines() if line.strip())
+
+
+@st.cache_data(ttl=30 * 60, show_spinner=False)
+def get_forecast_bulletin() -> dict | None:
+    """Fetch the full Veneto plain-weather bulletin, maps included."""
+    response = requests.get(ARPAV_FORECAST_URL, timeout=20)
+    response.raise_for_status()
+    root = ET.fromstring(response.content)
+    bulletin = next(
+        (
+            item
+            for item in root.findall("./bollettini/bollettino")
+            if item.get("bollettinoid") == ARPAV_FORECAST_BULLETIN_ID
+        ),
+        None,
+    )
+    if bulletin is None:
+        return None
+
+    days = []
+    for day in bulletin.findall("giorno"):
+        text_element = day.find("text")
+        days.append(
+            {
+                "date": " ".join(day.get("data", "").split()),
+                "text": _bulletin_plain_text(
+                    text_element.text if text_element is not None else ""
+                ),
+                "images": [
+                    {
+                        "url": image.get("src", ""),
+                        "caption": " ".join(image.get("caption", "").split()),
+                    }
+                    for image in day.findall("img")
+                    if image.get("src")
+                ],
+            }
+        )
+
+    emission = root.find("data_emissione")
+    evolution = bulletin.find("evoluzionegenerale")
+    return {
+        "title": bulletin.get("title", "Previsioni Veneto"),
+        "emission": emission.get("date", "") if emission is not None else "",
+        "evolution": _bulletin_plain_text(
+            evolution.text if evolution is not None else ""
+        ),
+        "days": days,
+    }
+
+
+@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
+def get_forecast_image_data_url(image_url: str) -> str:
+    """Download a forecast map and return an embeddable data URL."""
+    response = requests.get(image_url, timeout=15)
+    response.raise_for_status()
+    content_type = response.headers.get("Content-Type", "image/jpeg").split(";")[0]
+    encoded = base64.b64encode(response.content).decode("ascii")
+    return f"data:{content_type};base64,{encoded}"
+
+
+def render_forecast_bulletin() -> None:
+    """Render the full forecast bulletin in responsive illustrated cards."""
+    st.divider()
+    st.write("### 📆 Previsioni Meteo42")
+    try:
+        forecast = get_forecast_bulletin()
+    except (requests.exceptions.RequestException, ET.ParseError):
+        st.info("Bollettino momentaneamente non raggiungibile.")
+        return
+    if not forecast or not forecast["days"]:
+        st.info("Previsioni momentaneamente non disponibili.")
+        return
+
+    if forecast["evolution"]:
+        st.markdown(
+            '<div class="forecast-outlook">'
+            '<span class="forecast-eyebrow">Scenario</span>'
+            f'<p>{html.escape(forecast["evolution"])}</p>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+    cards = []
+    for index, day in enumerate(forecast["days"]):
+        figures = []
+        for image in day["images"]:
+            try:
+                image_src = get_forecast_image_data_url(image["url"])
+            except requests.exceptions.RequestException:
+                continue
+            figures.append(
+                '<figure>'
+                f'<img src="{html.escape(image_src, quote=True)}" '
+                f'alt="Previsione {html.escape(image["caption"], quote=True)}">'
+                f'<figcaption>{html.escape(image["caption"])}</figcaption>'
+                '</figure>'
+            )
+        forecast_text = html.escape(day["text"]).replace("\n", "<br><br>")
+        today_class = " forecast-card-featured" if index == 0 else ""
+        cards.append(
+            f'<article class="forecast-card{today_class}">'
+            '<header>'
+            f'<span class="forecast-day">{html.escape(day["date"])}</span>'
+            '</header>'
+            f'<div class="forecast-maps">{"".join(figures)}</div>'
+            f'<div class="forecast-copy">{forecast_text}</div>'
+            '</article>'
+        )
+
+    st.markdown(
+        """
+        <style>
+        .forecast-outlook {
+            margin: 0.25rem 0 1rem;
+            padding: 1rem 1.15rem;
+            border-left: 4px solid var(--primary-color);
+            border-radius: 0 14px 14px 0;
+            background: color-mix(in srgb, var(--primary-color) 8%, transparent);
+        }
+        .forecast-outlook p { margin: 0.35rem 0 0; line-height: 1.5; }
+        .forecast-eyebrow, .forecast-day {
+            font-size: 0.78rem;
+            font-weight: 750;
+            letter-spacing: 0.055em;
+            text-transform: uppercase;
+            color: var(--primary-color);
+        }
+        .forecast-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 1rem;
+            margin: 0.35rem 0 0.7rem;
+        }
+        .forecast-card {
+            overflow: hidden;
+            border: 1px solid color-mix(in srgb, var(--text-color) 14%, transparent);
+            border-radius: 17px;
+            background: color-mix(in srgb, var(--background-color) 96%, var(--text-color));
+            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.06);
+        }
+        .forecast-card-featured { grid-column: 1 / -1; }
+        .forecast-card header { padding: 0.9rem 1rem 0.15rem; }
+        .forecast-maps {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 0.6rem;
+            padding: 0.65rem;
+        }
+        .forecast-maps figure {
+            overflow: hidden;
+            margin: 0;
+            border-radius: 12px;
+            background: #edf3f5;
+        }
+        .forecast-maps img { display: block; width: 100%; height: auto; }
+        .forecast-maps figcaption {
+            padding: 0.42rem 0.65rem;
+            color: #425466;
+            font-size: 0.74rem;
+            font-weight: 650;
+            text-align: center;
+            text-transform: capitalize;
+        }
+        .forecast-copy { padding: 0.55rem 1rem 1.1rem; font-size: 0.91rem; line-height: 1.48; }
+        @media (max-width: 760px) {
+            .forecast-grid { grid-template-columns: 1fr; }
+            .forecast-card-featured { grid-column: auto; }
+        }
+        </style>
+        <div class="forecast-grid">
+        """
+        + "".join(cards)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    st.caption(f"Aggiornamento: {forecast['emission']}.")
+    st.link_button("Apri il bollettino completo", ARPAV_FORECAST_PAGE_URL)
 
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -266,6 +463,7 @@ def run_scrape(request_delay: float) -> None:
                 database_path=DATABASE_PATH,
                 csv_path=scrape.DEFAULT_CSV,
                 raw_directory=scrape.DEFAULT_RAW_DIRECTORY,
+                cloud_directory=scrape.DEFAULT_CLOUD_DIRECTORY,
                 request_delay=request_delay,
             )
         st.success("Aggiornamento completato")
@@ -295,6 +493,166 @@ def get_db_connection():
     )
     conn.row_factory = sqlite3.Row
     return conn
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_weather_diary_dates() -> list:
+    """Return local calendar dates having a bulletin or cloud frame."""
+    conn = get_db_connection()
+    try:
+        bulletin_dates = {
+            datetime.strptime(row[0], "%Y-%m-%d").date()
+            for row in conn.execute(
+                "SELECT weather_date FROM daily_weather_bulletins"
+            ).fetchall()
+        }
+        cloud_rows = conn.execute(
+            "SELECT observed_at_utc FROM cloud_type_images"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    cloud_dates = {
+        datetime.fromisoformat(row[0])
+        .astimezone(ZoneInfo(HOME_TIMEZONE))
+        .date()
+        for row in cloud_rows
+    }
+    return sorted(bulletin_dates | cloud_dates, reverse=True)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_daily_weather_bulletin(weather_date) -> dict | None:
+    conn = get_db_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT weather_date, issued_at, title, general_evolution
+            FROM daily_weather_bulletins
+            WHERE weather_date = ?
+            """,
+            (weather_date.isoformat(),),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return dict(row) if row is not None else None
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_cloud_type_frames(weather_date) -> list[dict]:
+    local_zone = ZoneInfo(HOME_TIMEZONE)
+    start_local = datetime(
+        weather_date.year,
+        weather_date.month,
+        weather_date.day,
+        tzinfo=local_zone,
+    )
+    end_local = start_local + timedelta(days=1)
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT observed_at_utc, file_path
+            FROM cloud_type_images
+            WHERE observed_at_utc >= ? AND observed_at_utc < ?
+            ORDER BY observed_at_utc
+            """,
+            (
+                start_local.astimezone(timezone.utc).isoformat(timespec="seconds"),
+                end_local.astimezone(timezone.utc).isoformat(timespec="seconds"),
+            ),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    frames = []
+    for row in rows:
+        path = Path(row["file_path"])
+        if not path.exists():
+            continue
+        observed_at = datetime.fromisoformat(row["observed_at_utc"])
+        frames.append(
+            {
+                "path": str(path),
+                "observed_at": observed_at.astimezone(local_zone),
+            }
+        )
+    return frames
+
+
+@st.cache_data(show_spinner=False)
+def build_cloud_type_animation(
+    frame_data: tuple[tuple[str, str], ...],
+    duration_ms: int,
+) -> bytes:
+    """Compose archived hourly analyses into a looping labelled GIF."""
+    frames = []
+    for path_text, label in frame_data:
+        with Image.open(path_text) as source:
+            frame = source.convert("RGBA")
+        overlay = Image.new("RGBA", frame.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        bar_height = max(30, frame.height // 15)
+        draw.rectangle(
+            (0, frame.height - bar_height, frame.width, frame.height),
+            fill=(8, 18, 28, 190),
+        )
+        draw.text(
+            (12, frame.height - bar_height + 8),
+            label,
+            fill=(255, 255, 255, 255),
+        )
+        labelled = Image.alpha_composite(frame, overlay).convert(
+            "P", palette=Image.Palette.ADAPTIVE, colors=256
+        )
+        frames.append(labelled)
+    if not frames:
+        return b""
+    output = BytesIO()
+    frames[0].save(
+        output,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=duration_ms,
+        loop=0,
+        disposal=2,
+        optimize=False,
+    )
+    return output.getvalue()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_day_observations(station_id: str, weather_date) -> pd.DataFrame:
+    """Read one civil Italian day from fixed-UTC+1 ARPAV timestamps."""
+    local_zone = ZoneInfo(HOME_TIMEZONE)
+    start_local = datetime(
+        weather_date.year,
+        weather_date.month,
+        weather_date.day,
+        tzinfo=local_zone,
+    )
+    end_local = start_local + timedelta(days=1)
+    start_db = start_local.astimezone(DB_TIMEZONE).replace(tzinfo=None)
+    end_db = end_local.astimezone(DB_TIMEZONE).replace(tzinfo=None)
+    conn = get_db_connection()
+    df = pd.read_sql_query(
+        """
+        SELECT observation_at, variable_type, value_numeric, unit
+        FROM observations
+        WHERE station_id = ?
+          AND observation_at >= ?
+          AND observation_at < ?
+        ORDER BY observation_at
+        """,
+        conn,
+        params=(
+            station_id,
+            start_db.strftime("%Y-%m-%d %H:%M:%S"),
+            end_db.strftime("%Y-%m-%d %H:%M:%S"),
+        ),
+    )
+    if not df.empty:
+        df["observation_at"] = observation_series_to_local(df["observation_at"])
+    return df
 
 
 def load_stations_config():
@@ -2238,9 +2596,10 @@ def render_overview_72h_charts(station_id: str) -> None:
 
 
 # Tabs
-tab0, tab1, tab2, tab3, tab4 = st.tabs(
+tab0, tab5, tab1, tab2, tab3, tab4 = st.tabs(
     [
         "📍 Panoramica",
+        "🕰️ Che tempo fece",
         "📊 Dati",
         "⚙️ Stazioni",
         "📈 Grafici",
@@ -2298,65 +2657,6 @@ with tab0:
         overview_points["temp_text"] = overview_points["value_numeric"].apply(
             lambda v: f"{v:.1f}°C" if pd.notna(v) else "n/d"
         )
-        radar_col, info_col = st.columns([2, 1])
-
-        with radar_col:
-            st.write("### 🌧️ Radar precipitazioni Nord-Est")
-            try:
-                radar = get_latest_arpav_radar()
-                if radar is None:
-                    st.info("Immagine radar temporaneamente non disponibile.")
-                else:
-                    st.image(radar["image"], width="stretch")
-                    st.caption(
-                        "Mosaico ARPAV aggiornato alle "
-                        f"{radar['observed_at'].strftime('%H:%M del %d/%m/%Y')} "
-                        "(ora locale). Intensità: verde debole, giallo moderata, "
-                        "rosso/viola forte."
-                    )
-            except requests.exceptions.RequestException:
-                st.info("Radar ARPAV momentaneamente non raggiungibile.")
-            st.link_button("Apri il radar ARPAV", ARPAV_RADAR_PAGE_URL)
-
-        with info_col:
-            if home_row is not None:
-                home_temp_row = latest_temps[
-                    latest_temps["station_id"] == home_row["station_id"]
-                ]
-                if not home_temp_row.empty:
-                    st.metric(
-                        f"🌡️ {home_row['station_name']}",
-                        f"{home_temp_row['value_numeric'].iloc[0]:.1f} °C",
-                    )
-                    st.caption(
-                        "Rilevata alle "
-                        + home_temp_row["observation_at"]
-                        .iloc[0]
-                        .strftime("%H:%M del %d/%m/%Y")
-                    )
-                else:
-                    st.info(
-                        "Nessuna temperatura recente per la stazione di casa"
-                    )
-            else:
-                st.info(
-                    "Nessuna stazione 'Mogliano Veneto' trovata: aggiungila "
-                    "in Gestione Stazioni per vedere qui i dati di casa"
-                )
-
-            st.dataframe(
-                overview_points[
-                    ["label", "temp_text"]
-                ].rename(
-                    columns={
-                        "label": "Zona",
-                        "temp_text": "Temperatura",
-                    }
-                ),
-                width="stretch",
-                hide_index=True,
-            )
-
         if home_row is not None:
             has_coords = pd.notna(home_row["latitudine"]) and pd.notna(
                 home_row["longitudine"]
@@ -2488,6 +2788,222 @@ with tab0:
                         "Stima per Mogliano: Sole sotto −6°, pianeta almeno "
                         "10° sopra l’orizzonte; nuvole e ostacoli locali non inclusi."
                     )
+
+        st.divider()
+        radar_col, info_col = st.columns([2, 1])
+
+        with radar_col:
+            st.write("### 🌧️ Radar precipitazioni Nord-Est")
+            try:
+                radar = get_latest_arpav_radar()
+                if radar is None:
+                    st.info("Immagine radar temporaneamente non disponibile.")
+                else:
+                    st.image(radar["image"], width="stretch")
+                    st.caption(
+                        "Mosaico aggiornato alle "
+                        f"{radar['observed_at'].strftime('%H:%M del %d/%m/%Y')} "
+                        "(ora locale). Intensità: verde debole, giallo moderata, "
+                        "rosso/viola forte."
+                    )
+            except requests.exceptions.RequestException:
+                st.info("Radar momentaneamente non raggiungibile.")
+            st.link_button("Apri il radar originale", ARPAV_RADAR_PAGE_URL)
+
+        with info_col:
+            if home_row is not None:
+                home_temp_row = latest_temps[
+                    latest_temps["station_id"] == home_row["station_id"]
+                ]
+                if not home_temp_row.empty:
+                    st.metric(
+                        f"🌡️ {home_row['station_name']}",
+                        f"{home_temp_row['value_numeric'].iloc[0]:.1f} °C",
+                    )
+                    st.caption(
+                        "Rilevata alle "
+                        + home_temp_row["observation_at"]
+                        .iloc[0]
+                        .strftime("%H:%M del %d/%m/%Y")
+                    )
+                else:
+                    st.info(
+                        "Nessuna temperatura recente per la stazione di casa"
+                    )
+            else:
+                st.info(
+                    "Nessuna stazione 'Mogliano Veneto' trovata: aggiungila "
+                    "in Gestione Stazioni per vedere qui i dati di casa"
+                )
+
+            st.dataframe(
+                overview_points[["label", "temp_text"]].rename(
+                    columns={
+                        "label": "Zona",
+                        "temp_text": "Temperatura",
+                    }
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+
+        render_forecast_bulletin()
+
+
+# TAB 5: Daily weather diary
+with tab5:
+    st.subheader("🕰️ Che tempo fece")
+    st.caption(
+        "Il racconto del giorno, le osservazioni di Mogliano e l’evoluzione "
+        "oraria della nuvolosità."
+    )
+
+    diary_dates = get_weather_diary_dates()
+    if not diary_dates:
+        st.info(
+            "Lo storico comincerà con il prossimo aggiornamento dello scraper."
+        )
+    else:
+        selected_diary_date = st.selectbox(
+            "Giorno",
+            diary_dates,
+            format_func=lambda value: value.strftime("%A %d/%m/%Y").capitalize(),
+            key="weather_diary_date",
+        )
+        daily_bulletin = get_daily_weather_bulletin(selected_diary_date)
+        if daily_bulletin:
+            issued_at = datetime.fromisoformat(daily_bulletin["issued_at"])
+            st.markdown(
+                '<div class="weather-diary-story">'
+                '<span class="weather-diary-eyebrow">Il racconto del giorno</span>'
+                f'<h3>{html.escape(daily_bulletin["title"])}</h3>'
+                f'<p>{html.escape(daily_bulletin["general_evolution"])}</p>'
+                f'<small>Aggiornato alle {issued_at.strftime("%H:%M")}</small>'
+                '</div>'
+                """
+                <style>
+                .weather-diary-story {
+                    margin: 0.4rem 0 1rem;
+                    padding: 1.15rem 1.25rem;
+                    border-radius: 18px;
+                    background: linear-gradient(135deg,
+                        color-mix(in srgb, var(--primary-color) 12%, transparent),
+                        color-mix(in srgb, var(--background-color) 96%, var(--text-color)));
+                    border: 1px solid color-mix(in srgb, var(--text-color) 12%, transparent);
+                }
+                .weather-diary-story h3 { margin: 0.2rem 0 0.65rem; }
+                .weather-diary-story p { margin: 0; line-height: 1.58; }
+                .weather-diary-story small { display: block; margin-top: 0.75rem; opacity: 0.65; }
+                .weather-diary-eyebrow {
+                    color: var(--primary-color); font-size: 0.76rem;
+                    font-weight: 750; letter-spacing: 0.055em; text-transform: uppercase;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("Per questo giorno non è stato archiviato un bollettino.")
+
+        diary_stations = get_stations_from_db()
+        diary_home = diary_stations[
+            diary_stations["station_name"]
+            .str.lower()
+            .str.contains(HOME_STATION_HINT, na=False)
+        ]
+        if not diary_home.empty:
+            day_observations = get_day_observations(
+                diary_home.iloc[0]["station_id"],
+                selected_diary_date,
+            )
+            if not day_observations.empty:
+                temperature = day_observations[
+                    (day_observations["variable_type"] == "TARIA2M")
+                    & day_observations["value_numeric"].notna()
+                ]
+                rain = day_observations[
+                    (day_observations["variable_type"] == "PREC")
+                    & day_observations["value_numeric"].notna()
+                ]
+                wind = day_observations[
+                    (day_observations["variable_type"] == "VVENTO10M")
+                    & day_observations["value_numeric"].notna()
+                ]
+                humidity = day_observations[
+                    (day_observations["variable_type"] == "UMID2M")
+                    & day_observations["value_numeric"].notna()
+                ]
+                metric_columns = st.columns(4)
+                metric_columns[0].metric(
+                    "Temperatura",
+                    (
+                        f"{temperature['value_numeric'].min():.1f} / "
+                        f"{temperature['value_numeric'].max():.1f} °C"
+                        if not temperature.empty else "—"
+                    ),
+                    help="Minima e massima della giornata civile italiana.",
+                )
+                metric_columns[1].metric(
+                    "Pioggia",
+                    f"{rain['value_numeric'].sum():.1f} mm" if not rain.empty else "—",
+                )
+                metric_columns[2].metric(
+                    "Vento massimo",
+                    f"{wind['value_numeric'].max():.1f} m/s" if not wind.empty else "—",
+                )
+                metric_columns[3].metric(
+                    "Umidità media",
+                    f"{humidity['value_numeric'].mean():.0f}%" if not humidity.empty else "—",
+                )
+
+        cloud_frames = get_cloud_type_frames(selected_diary_date)
+        st.divider()
+        st.write("### ☁️ Nuvole durante la giornata")
+        if not cloud_frames:
+            st.info("Nessuna analisi delle nubi archiviata per questo giorno.")
+        else:
+            speed_label = st.select_slider(
+                "Velocità animazione",
+                options=["Lenta", "Normale", "Veloce"],
+                value="Normale",
+                key="cloud_animation_speed",
+            )
+            duration_ms = {"Lenta": 1400, "Normale": 850, "Veloce": 450}[
+                speed_label
+            ]
+            frame_data = tuple(
+                (
+                    frame["path"],
+                    frame["observed_at"].strftime("%A %d/%m/%Y · %H:%M").capitalize(),
+                )
+                for frame in cloud_frames
+            )
+            with st.spinner("Creo l’animazione della giornata..."):
+                animation = build_cloud_type_animation(frame_data, duration_ms)
+            if animation:
+                st.image(animation, width="stretch")
+                st.caption(
+                    f"{len(cloud_frames)} fotogrammi orari, mostrati in ora italiana."
+                )
+
+            with st.expander("Esplora un singolo orario"):
+                selected_frame_index = st.select_slider(
+                    "Ora",
+                    options=list(range(len(cloud_frames))),
+                    value=len(cloud_frames) - 1,
+                    format_func=lambda index: cloud_frames[index][
+                        "observed_at"
+                    ].strftime("%H:%M"),
+                    key="cloud_frame_hour",
+                )
+                selected_frame = cloud_frames[selected_frame_index]
+                st.image(
+                    selected_frame["path"],
+                    caption=selected_frame["observed_at"].strftime(
+                        "%H:%M del %d/%m/%Y (ora italiana)"
+                    ),
+                    width="stretch",
+                )
 
 
 # TAB 1: Data View

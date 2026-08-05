@@ -4,25 +4,45 @@ Due servizi, due file: `com.meteo42.scraper.plist` scarica i dati,
 `com.meteo42.dashboard.plist` tiene su la dashboard. Entrambi contengono il
 segnaposto `/path/to/project`, da sostituire al momento dell'installazione.
 
-## Passo 1: Sostituire i percorsi
+## Passo 1: Creare l'ambiente virtuale
 
 ```bash
-sed -i '' "s|/path/to/project|$PWD|g" com.meteo42.scraper.plist com.meteo42.dashboard.plist
+python3.13 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
 ```
 
 I plist puntano a `.venv/bin/python` e `.venv/bin/streamlit`, non al Python di
-sistema: le dipendenze di `requirements.txt` stanno nel venv.
+sistema: le dipendenze di `requirements.txt` stanno nel venv. Il progetto
+richiede Python 3.10 o successivo; sul Mac mini si usa il Python 3.13 di
+Homebrew, non il `python3` Apple 3.9.
 
-## Passo 2: Creare la cartella dei log
+## Passo 2: Creare la cartella dei log e installare i plist
 
 ```bash
 mkdir -p logs
+sed "s|/path/to/project|$PWD|g" com.meteo42.scraper.plist \
+  > ~/Library/LaunchAgents/com.meteo42.scraper.plist
+sed "s|/path/to/project|$PWD|g" com.meteo42.dashboard.plist \
+  > ~/Library/LaunchAgents/com.meteo42.dashboard.plist
 ```
 
-## Passo 3: Installare e caricare
+In questo modo i file modello nel repository conservano il segnaposto e possono
+essere reinstallati anche dopo aver spostato il progetto.
+
+## Passo 3: Caricare i servizi
 
 ```bash
-cp com.meteo42.scraper.plist com.meteo42.dashboard.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.meteo42.scraper.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.meteo42.dashboard.plist
+```
+
+Se i servizi erano già caricati prima di spostare la cartella, scaricarli prima
+di rigenerare i plist e ricaricarli dopo:
+
+```bash
+launchctl bootout gui/$(id -u)/com.meteo42.scraper
+launchctl bootout gui/$(id -u)/com.meteo42.dashboard
+# ripetere il Passo 2
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.meteo42.scraper.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.meteo42.dashboard.plist
 ```

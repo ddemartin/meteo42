@@ -10,17 +10,15 @@ launchctl kickstart -k gui/$(id -u)/com.meteo42.dashboard
 ## Setup
 
 ```bash
-# Crea ambiente virtuale
-python -m venv .venv
+# Richiede Python 3.10 o successivo. Sul Mac mini è installato Python 3.13
+# tramite Homebrew; non usare il python3 Apple (3.9).
+python3.13 -m venv .venv
 
-# Attiva
-# su macOS/Linux:
+# Attiva su macOS:
 source .venv/bin/activate
-# su Windows:
-.venv\Scripts\activate
 
 # Installa dipendenze
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 ## Uso
@@ -120,6 +118,20 @@ Log dei download:
 - `records_received`: Record ricevuti
 - `records_inserted`: Record inseriti
 - `error_message`: Messaggio errore (se fallito)
+
+### `daily_weather_bulletins`
+Bollettino narrativo quotidiano usato dal diario meteorologico:
+- `weather_date`: giorno descritto
+- `issued_at`: emissione in ora italiana
+- `general_evolution`: evoluzione generale del bollettino Meteo Veneto
+- `source_xml`: copia XML del bollettino originale
+
+### `cloud_type_images`
+Indice delle analisi orarie della tipologia delle nubi:
+- `observed_at_utc`: timestamp originale UTC
+- `source_id`: identificativo dell'asset sorgente
+- `file_path`: immagine conservata in `cloud_type/`
+- `mime_type`, `size_bytes`: formato e dimensione del file
 
 ## Dashboard
 

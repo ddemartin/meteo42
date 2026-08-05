@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import argparse
 import csv
+import html
 import json
 import logging
 import os
+import re
 import sqlite3
 import sys
 import time
-from datetime import datetime
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -28,6 +32,18 @@ DEFAULT_DATABASE = Path(
 )
 DEFAULT_CSV = Path("arpav_meteo.csv")
 DEFAULT_RAW_DIRECTORY = Path("raw")
+DEFAULT_CLOUD_DIRECTORY = Path("cloud_type")
+
+BULLETIN_URL = (
+    "https://meteo.arpa.veneto.it/meteo/bollettini/it/xml/"
+    "bollettino_utenti.xml"
+)
+BULLETIN_ID = "MV"
+CLOUD_TYPE_CHANNEL_TOKEN = "d7a2f8fa870d458ea2f2557cf35f2eff"
+CLOUD_TYPE_FEED_URL = (
+    "https://cm.meteoam.it/content/published/api/v1.1/items"
+)
+HOME_TIMEZONE = ZoneInfo("Europe/Rome")
 
 LOG = logging.getLogger("arpav_collector")
 
@@ -230,7 +246,230 @@ def initialize_database(connection: sqlite3.Connection) -> None:
         """
     )
 
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS daily_weather_bulletins (
+            weather_date       TEXT PRIMARY KEY,
+            issued_at          TEXT NOT NULL,
+            title              TEXT NOT NULL,
+            general_evolution  TEXT NOT NULL,
+            source_xml         TEXT NOT NULL,
+            downloaded_at      TEXT NOT NULL
+        )
+        """
+    )
+
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cloud_type_images (
+            observed_at_utc    TEXT PRIMARY KEY,
+            source_id          TEXT NOT NULL UNIQUE,
+            file_path          TEXT NOT NULL,
+            mime_type          TEXT NOT NULL,
+            size_bytes         INTEGER NOT NULL,
+            downloaded_at      TEXT NOT NULL
+        )
+        """
+    )
+
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_cloud_type_observed_at
+        ON cloud_type_images(observed_at_utc)
+        """
+    )
+
     connection.commit()
+
+
+def _plain_bulletin_text(raw_text: str) -> str:
+    decoded = html.unescape(raw_text or "")
+    decoded = re.sub(r"<br\s*/?>", "\n", decoded, flags=re.IGNORECASE)
+    decoded = re.sub(r"<[^>]+>", "", decoded)
+    return "\n".join(line.strip() for line in decoded.splitlines() if line.strip())
+
+
+def archive_daily_weather_bulletin(
+    session: requests.Session,
+    connection: sqlite3.Connection,
+) -> bool:
+    """Archive the current MV general outlook once per issued bulletin."""
+    response = session.get(BULLETIN_URL, timeout=(10, 30))
+    response.raise_for_status()
+    root = ET.fromstring(response.content)
+    bulletin = next(
+        (
+            item
+            for item in root.findall("./bollettini/bollettino")
+            if item.get("bollettinoid") == BULLETIN_ID
+        ),
+        None,
+    )
+    emission = root.find("data_emissione")
+    evolution = bulletin.find("evoluzionegenerale") if bulletin is not None else None
+    if bulletin is None or emission is None or evolution is None:
+        raise RuntimeError("MV bulletin is missing required fields")
+
+    issued_at = datetime.strptime(
+        emission.get("date", "").strip(),
+        "%d/%m/%Y alle %H:%M",
+    ).replace(tzinfo=HOME_TIMEZONE)
+    weather_date = issued_at.date().isoformat()
+    downloaded_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    general_evolution = _plain_bulletin_text(evolution.text or "")
+    source_xml = ET.tostring(bulletin, encoding="unicode")
+
+    previous = connection.execute(
+        "SELECT issued_at, general_evolution FROM daily_weather_bulletins "
+        "WHERE weather_date = ?",
+        (weather_date,),
+    ).fetchone()
+    changed = previous is None or previous != (
+        issued_at.isoformat(timespec="minutes"),
+        general_evolution,
+    )
+    connection.execute(
+        """
+        INSERT INTO daily_weather_bulletins (
+            weather_date, issued_at, title, general_evolution,
+            source_xml, downloaded_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(weather_date) DO UPDATE SET
+            issued_at = excluded.issued_at,
+            title = excluded.title,
+            general_evolution = excluded.general_evolution,
+            source_xml = excluded.source_xml,
+            downloaded_at = excluded.downloaded_at
+        """,
+        (
+            weather_date,
+            issued_at.isoformat(timespec="minutes"),
+            " ".join(bulletin.get("title", "Bollettino Meteo Veneto").split()),
+            general_evolution,
+            source_xml,
+            downloaded_at,
+        ),
+    )
+    connection.commit()
+    return changed
+
+
+def _medium_image_url(item: dict[str, Any]) -> str:
+    renditions = item.get("fields", {}).get("renditions", [])
+    medium = next(
+        (rendition for rendition in renditions if rendition.get("name") == "Medium"),
+        None,
+    )
+    if medium is None:
+        raise RuntimeError(f"Cloud image {item.get('id')} has no Medium rendition")
+    formats = medium.get("formats", [])
+    selected = next(
+        (image_format for image_format in formats if image_format.get("format") == "webp"),
+        formats[0] if formats else None,
+    )
+    if selected is None:
+        raise RuntimeError(f"Cloud image {item.get('id')} has no downloadable format")
+    links = selected.get("links", [])
+    if not links or not links[0].get("href"):
+        raise RuntimeError(f"Cloud image {item.get('id')} has no download URL")
+    return str(links[0]["href"])
+
+
+def _image_extension(content_type: str, content: bytes) -> str:
+    if content.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return ".webp"
+    if content.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    return {
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+    }.get(content_type, ".img")
+
+
+def archive_hourly_cloud_types(
+    session: requests.Session,
+    connection: sqlite3.Connection,
+    cloud_directory: Path,
+) -> int:
+    """Backfill missing on-the-hour cloud-type analyses from the last day."""
+    response = session.get(
+        CLOUD_TYPE_FEED_URL,
+        params={
+            "channelToken": CLOUD_TYPE_CHANNEL_TOKEN,
+            "fields": "all",
+            "q": 'type eq "Integration-Image"',
+            "limit": 96,
+            "orderBy": "fields.date:desc",
+        },
+        timeout=(10, 30),
+    )
+    response.raise_for_status()
+    items = response.json().get("items", [])
+    hourly_items = []
+    for item in items:
+        timestamp_value = item.get("fields", {}).get("date", {}).get("value")
+        if not timestamp_value:
+            continue
+        observed_at = datetime.fromisoformat(
+            str(timestamp_value).replace("Z", "+00:00")
+        ).astimezone(timezone.utc)
+        if observed_at.minute == 0:
+            hourly_items.append((observed_at, item))
+
+    cloud_directory.mkdir(parents=True, exist_ok=True)
+    inserted = 0
+    for observed_at, item in sorted(hourly_items):
+        observed_iso = observed_at.isoformat(timespec="seconds")
+        existing = connection.execute(
+            "SELECT file_path FROM cloud_type_images WHERE observed_at_utc = ?",
+            (observed_iso,),
+        ).fetchone()
+        if existing is not None and Path(existing[0]).exists():
+            continue
+
+        image_response = session.get(_medium_image_url(item), timeout=(10, 30))
+        image_response.raise_for_status()
+        content = image_response.content
+        content_type = image_response.headers.get(
+            "Content-Type", "application/octet-stream"
+        ).split(";")[0]
+        extension = _image_extension(content_type, content)
+        filename = observed_at.strftime("%Y-%m-%d-%H-%M") + extension
+        destination = cloud_directory / filename
+        temporary = cloud_directory / f"{filename}.tmp"
+        temporary.write_bytes(content)
+        temporary.replace(destination)
+
+        connection.execute(
+            """
+            INSERT INTO cloud_type_images (
+                observed_at_utc, source_id, file_path, mime_type,
+                size_bytes, downloaded_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(observed_at_utc) DO UPDATE SET
+                source_id = excluded.source_id,
+                file_path = excluded.file_path,
+                mime_type = excluded.mime_type,
+                size_bytes = excluded.size_bytes,
+                downloaded_at = excluded.downloaded_at
+            """,
+            (
+                observed_iso,
+                str(item.get("id", "")),
+                str(destination),
+                content_type,
+                len(content),
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            ),
+        )
+        connection.commit()
+        inserted += 1
+
+    return inserted
 
 
 def to_float(value: Any) -> float | None:
@@ -567,6 +806,7 @@ def collect_all(
     database_path: Path,
     csv_path: Path,
     raw_directory: Path,
+    cloud_directory: Path,
     request_delay: float,
 ) -> None:
     stations = load_stations(config_path)
@@ -653,6 +893,31 @@ def collect_all(
             if request_delay > 0 and index < len(stations):
                 time.sleep(request_delay)
 
+        try:
+            bulletin_changed = archive_daily_weather_bulletin(
+                session=session,
+                connection=connection,
+            )
+            LOG.info(
+                "Daily weather bulletin: %s",
+                "archived" if bulletin_changed else "already up to date",
+            )
+        except Exception:
+            LOG.exception("Daily weather bulletin archival failed")
+
+        try:
+            cloud_images_inserted = archive_hourly_cloud_types(
+                session=session,
+                connection=connection,
+                cloud_directory=cloud_directory,
+            )
+            LOG.info(
+                "Cloud Type archive: %d new hourly images",
+                cloud_images_inserted,
+            )
+        except Exception:
+            LOG.exception("Cloud Type archival failed")
+
         export_csv(
             connection=connection,
             destination=csv_path,
@@ -697,6 +962,12 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--cloud-directory",
+        type=Path,
+        default=DEFAULT_CLOUD_DIRECTORY,
+    )
+
+    parser.add_argument(
         "--request-delay",
         type=float,
         default=0.5,
@@ -720,6 +991,7 @@ def main() -> int:
             database_path=args.database,
             csv_path=args.csv,
             raw_directory=args.raw_directory,
+            cloud_directory=args.cloud_directory,
             request_delay=args.request_delay,
         )
     except Exception:
