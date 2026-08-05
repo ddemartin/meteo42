@@ -21,6 +21,18 @@ try:
 except ImportError:  # Keep the rest of the dashboard usable during upgrades.
     ephem = None
 
+NAKED_EYE_PLANETS = (
+    [
+        ("Mercurio", ephem.Mercury),
+        ("Venere", ephem.Venus),
+        ("Marte", ephem.Mars),
+        ("Giove", ephem.Jupiter),
+        ("Saturno", ephem.Saturn),
+    ]
+    if ephem is not None
+    else []
+)
+
 import scrape
 
 DEFAULT_DATABASE_PATH = os.environ.get(
@@ -1291,20 +1303,45 @@ def compute_sun_times(lat: float, lon: float, target_date) -> dict:
     }
 
 
-def build_sun_altitude_figure(lat: float, lon: float, target_date) -> go.Figure:
-    """Solar altitude through the local civil day, including twilight."""
+def _ephem_altitudes(lat: float, lon: float, moments, body_type) -> list[float]:
+    """Return topocentric body altitudes for timezone-aware local moments."""
+    observer = ephem.Observer()
+    observer.lat = str(lat)
+    observer.lon = str(lon)
+    observer.pressure = 0  # Geometric altitude, consistent across all bodies.
+    altitudes = []
+    for moment in moments:
+        observer.date = moment.to_pydatetime().astimezone(
+            ZoneInfo(UTC_TIMEZONE)
+        ).replace(tzinfo=None)
+        body = body_type(observer)
+        altitudes.append(math.degrees(float(body.alt)))
+    return altitudes
+
+
+def build_sun_altitude_figure(
+    lat: float,
+    lon: float,
+    target_date,
+) -> go.Figure:
+    """Altitude of Sun, Moon and naked-eye planets over the civil day."""
     tzinfo = ZoneInfo(HOME_TIMEZONE)
     observer = Observer(latitude=lat, longitude=lon)
     day_start = datetime.combine(target_date, datetime.min.time(), tzinfo=tzinfo)
+    day_end = datetime.combine(
+        target_date + timedelta(days=1), datetime.min.time(), tzinfo=tzinfo
+    )
     moments = pd.date_range(
         day_start,
-        day_start + timedelta(days=1),
+        day_end,
         freq="5min",
-        inclusive="left",
+        inclusive="both",
     )
     altitudes = [sun_elevation(observer, moment.to_pydatetime()) for moment in moments]
+    all_altitudes = list(altitudes)
 
     fig = go.Figure()
+    fig.add_hrect(y0=-90, y1=-18, fillcolor="#020617", opacity=0.16, line_width=0)
     fig.add_hrect(y0=-18, y1=-12, fillcolor="#172554", opacity=0.20, line_width=0)
     fig.add_hrect(y0=-12, y1=-6, fillcolor="#4338CA", opacity=0.13, line_width=0)
     fig.add_hrect(y0=-6, y1=0, fillcolor="#F59E0B", opacity=0.10, line_width=0)
@@ -1326,10 +1363,45 @@ def build_sun_altitude_figure(lat: float, lon: float, target_date) -> go.Figure:
             y=altitudes,
             mode="lines",
             line=dict(color="#F59E0B", width=3),
-            name="Altezza del Sole",
+            name="Sole",
             hovertemplate="%{x|%H:%M} · %{y:.1f}°<extra></extra>",
         )
     )
+
+    if ephem is not None:
+        moon_altitudes = _ephem_altitudes(lat, lon, moments, ephem.Moon)
+        all_altitudes.extend(moon_altitudes)
+        fig.add_trace(
+            go.Scatter(
+                x=moments,
+                y=moon_altitudes,
+                mode="lines",
+                line=dict(color="#94A3B8", width=2.5, dash="dot"),
+                name="Luna",
+                hovertemplate="%{x|%H:%M} · %{y:.1f}°<extra></extra>",
+            )
+        )
+
+        planet_colors = {
+            "Mercurio": "#A78BFA",
+            "Venere": "#0EA5E9",
+            "Marte": "#EF4444",
+            "Giove": "#FB923C",
+            "Saturno": "#EAB308",
+        }
+        for planet_name, planet_type in NAKED_EYE_PLANETS:
+            planet_altitudes = _ephem_altitudes(lat, lon, moments, planet_type)
+            all_altitudes.extend(planet_altitudes)
+            fig.add_trace(
+                go.Scatter(
+                    x=moments,
+                    y=planet_altitudes,
+                    mode="lines",
+                    line=dict(color=planet_colors[planet_name], width=2),
+                    name=planet_name,
+                    hovertemplate="%{x|%H:%M} · %{y:.1f}°<extra></extra>",
+                )
+            )
 
     now_local = datetime.now(tzinfo)
     if now_local.date() == target_date:
@@ -1341,19 +1413,60 @@ def build_sun_altitude_figure(lat: float, lon: float, target_date) -> go.Figure:
                 mode="markers",
                 marker=dict(color="#F97316", size=10, line=dict(color="white", width=2)),
                 name="Adesso",
+                showlegend=False,
                 hovertemplate="Adesso · %{y:.1f}°<extra></extra>",
             )
         )
+        if ephem is not None:
+            current_moment = [pd.Timestamp(now_local)]
+            current_bodies = [
+                ("Luna", ephem.Moon, "#94A3B8"),
+                *[
+                    (planet_name, planet_type, planet_colors[planet_name])
+                    for planet_name, planet_type in NAKED_EYE_PLANETS
+                ],
+            ]
+            for body_name, body_type, color in current_bodies:
+                body_altitude = _ephem_altitudes(
+                    lat, lon, current_moment, body_type
+                )[0]
+                fig.add_trace(
+                    go.Scatter(
+                        x=[now_local],
+                        y=[body_altitude],
+                        mode="markers",
+                        marker=dict(
+                            color=color,
+                            size=9,
+                            line=dict(color="white", width=1.5),
+                        ),
+                        name=f"{body_name} adesso",
+                        showlegend=False,
+                        hovertemplate=(
+                            f"{body_name} adesso · %{{y:.1f}}°<extra></extra>"
+                        ),
+                    )
+                )
 
     fig.add_hline(y=0, line_color="rgba(100,116,139,0.55)", line_width=1)
+    # The full nightly solar arc determines the useful lower edge. Other bodies
+    # may approach the nadir while they are not observable; including those
+    # values would compress the visible portion of every trajectory.
+    lower_bound = max(-90, math.floor(min(altitudes) / 10) * 10)
+    upper_bound = min(90, math.ceil(max(all_altitudes) / 10) * 10)
     fig.update_layout(
-        title="Il percorso del Sole oggi",
+        title="Percorsi nel cielo oggi",
         xaxis=dict(title=None, tickformat="%H:%M", dtick=3 * 60 * 60 * 1000),
-        yaxis=dict(title="Altezza sull'orizzonte", ticksuffix="°", range=[-18, 70]),
+        yaxis=dict(
+            title="Altezza sull'orizzonte",
+            ticksuffix="°",
+            range=[lower_bound, upper_bound],
+        ),
         hovermode="x",
-        height=350,
-        showlegend=False,
-        margin=dict(l=45, r=20, t=55, b=40),
+        height=430,
+        showlegend=True,
+        legend=MOBILE_LEGEND,
+        margin=dict(l=45, r=20, t=55, b=105),
     )
     return fig
 
@@ -1403,15 +1516,8 @@ def get_visible_planets(lat: float, lon: float, target_date) -> pd.DataFrame:
         end = compute_sun_times(lat, lon, target_date + timedelta(days=1))["sunrise"]
 
     moments = pd.date_range(start, end, freq="10min")
-    planet_types = [
-        ("Mercurio", ephem.Mercury),
-        ("Venere", ephem.Venus),
-        ("Marte", ephem.Mars),
-        ("Giove", ephem.Jupiter),
-        ("Saturno", ephem.Saturn),
-    ]
     rows = []
-    for italian_name, planet_type in planet_types:
+    for italian_name, planet_type in NAKED_EYE_PLANETS:
         candidates = []
         for moment in moments:
             local_moment = moment.to_pydatetime()
@@ -2323,6 +2429,11 @@ with tab0:
                 noon_col.metric("🕛 Culmina", sun_times["noon"].strftime("%H:%M"))
                 sunset_col.metric("🌇 Tramonta", sun_times["sunset"].strftime("%H:%M"))
 
+                visible_planets = get_visible_planets(
+                    home_row["latitudine"],
+                    home_row["longitudine"],
+                    local_today,
+                )
                 render_chart(
                     build_sun_altitude_figure(
                         home_row["latitudine"],
@@ -2357,11 +2468,6 @@ with tab0:
 
                 with planets_col:
                     st.write("#### Pianeti visibili a occhio nudo")
-                    visible_planets = get_visible_planets(
-                        home_row["latitudine"],
-                        home_row["longitudine"],
-                        local_today,
-                    )
                     if ephem is None:
                         st.info(
                             "Installa le dipendenze aggiornate per abilitare "
