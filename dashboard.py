@@ -461,7 +461,6 @@ def run_scrape(request_delay: float) -> None:
             scrape.collect_all(
                 config_path=scrape.DEFAULT_CONFIG,
                 database_path=DATABASE_PATH,
-                csv_path=scrape.DEFAULT_CSV,
                 raw_directory=scrape.DEFAULT_RAW_DIRECTORY,
                 cloud_directory=scrape.DEFAULT_CLOUD_DIRECTORY,
                 request_delay=request_delay,
@@ -707,6 +706,32 @@ def get_observations_df(
         if "downloaded_at" in df.columns:
             df["downloaded_at"] = offset_series_to_local(df["downloaded_at"])
     return df
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def observations_csv_bytes(
+    station_id: str | None = None,
+    variable_type: str | None = None,
+    days: int = 7,
+) -> bytes:
+    """CSV della selezione corrente, pronto per `st.download_button`.
+
+    Punto e virgola e BOM come separatore e codifica perché il consumo è
+    Excel in locale italiano, dove la virgola è il separatore decimale.
+
+    In cache perché `download_button` vuole i byte già pronti a ogni rerun:
+    senza, ogni interazione con la pagina rigenererebbe l'export.
+    """
+    return (
+        get_observations_df(
+            station_id=station_id,
+            variable_type=variable_type,
+            days=days,
+        )
+        .to_csv(index=False, sep=";")
+        .encode("utf-8-sig")
+    )
+
 
 def period_floor(timestamps: pd.Series, frequency: str) -> pd.Series:
     """Floor timestamps to the start of their day/week(Mon)/month period."""
@@ -3068,6 +3093,26 @@ with tab1:
         )
         st.info(
             f"Total records: {len(df)}"
+        )
+
+        slug = (
+            f"{selected_station_name}_{selected_var}_{days}g"
+            .lower()
+            .replace(" ", "-")
+        )
+        st.download_button(
+            "⬇️ Scarica CSV della selezione",
+            data=observations_csv_bytes(
+                station_id=station_id,
+                variable_type=variable_type,
+                days=days,
+            ),
+            file_name=f"meteo42_{slug}.csv",
+            mime="text/csv",
+            help=(
+                "Esporta le righe filtrate qui sopra. Per l'intero database "
+                "conviene copiare arpav_meteo.sqlite, che è già un file."
+            ),
         )
     else:
         st.warning("Nessun dato disponibile")

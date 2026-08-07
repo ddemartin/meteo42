@@ -43,7 +43,6 @@ python scrape.py
 # Opzioni:
 # --config stations.json          File di configurazione (default)
 # --database arpav_meteo.sqlite  Database SQLite (default)
-# --csv arpav_meteo.csv          Export CSV (default)
 # --raw-directory raw            Directory per JSON grezzi (default)
 # --request-delay 0.5            Delay tra richieste in secondi (default)
 ```
@@ -146,7 +145,10 @@ La dashboard Streamlit offre 3 tab:
 
 **📊 Dati**
 - Visualizza osservazioni con filtri per stazione, variabile e periodo
-- Esporta risultati
+- Scarica in CSV **la selezione filtrata** (`;` e BOM, per Excel italiano).
+  Non esiste più un export automatico dell'intero database: per quello si
+  copia `arpav_meteo.sqlite`, che è già un file solo. Vedi
+  [MEMORANDUM.md](MEMORANDUM.md) (2026-08-07)
 
 **⚙️ Stazioni**
 - Gestisci `stations.json`

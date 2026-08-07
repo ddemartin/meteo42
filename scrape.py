@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import html
 import json
 import logging
@@ -30,7 +29,6 @@ DEFAULT_CONFIG = Path("stations.json")
 DEFAULT_DATABASE = Path(
     os.environ.get("ARPAV_DATABASE_PATH", "arpav_meteo.sqlite")
 )
-DEFAULT_CSV = Path("arpav_meteo.csv")
 DEFAULT_RAW_DIRECTORY = Path("raw")
 DEFAULT_CLOUD_DIRECTORY = Path("cloud_type")
 
@@ -738,64 +736,9 @@ def register_download_failure(
     connection.commit()
 
 
-def export_csv(
-    connection: sqlite3.Connection,
-    destination: Path,
-) -> None:
-    rows = connection.execute(
-        """
-        SELECT
-            o.station_id,
-            COALESCE(
-                o.station_name,
-                s.api_name,
-                s.configured_name
-            ) AS station_name,
-            o.observation_at,
-            o.variable_type,
-            o.value_numeric,
-            o.value_text,
-            o.unit,
-            o.downloaded_at
-        FROM observations AS o
-        LEFT JOIN stations AS s
-            ON s.station_id = o.station_id
-        ORDER BY
-            o.station_id,
-            o.observation_at,
-            o.variable_type
-        """
-    )
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-
-    with destination.open(
-        "w",
-        encoding="utf-8-sig",
-        newline="",
-    ) as file:
-        writer = csv.writer(file, delimiter=";")
-
-        writer.writerow(
-            [
-                "station_id",
-                "station_name",
-                "observation_at",
-                "variable_type",
-                "value_numeric",
-                "value_text",
-                "unit",
-                "downloaded_at",
-            ]
-        )
-
-        writer.writerows(rows)
-
-
 def collect_all(
     config_path: Path,
     database_path: Path,
-    csv_path: Path,
     raw_directory: Path,
     cloud_directory: Path,
     request_delay: float,
@@ -909,11 +852,6 @@ def collect_all(
         except Exception:
             LOG.exception("Cloud Type archival failed")
 
-        export_csv(
-            connection=connection,
-            destination=csv_path,
-        )
-
     LOG.info(
         "Completed: %d successful stations, %d failures, "
         "%d new observations",
@@ -938,12 +876,6 @@ def parse_arguments() -> argparse.Namespace:
         "--database",
         type=Path,
         default=DEFAULT_DATABASE,
-    )
-
-    parser.add_argument(
-        "--csv",
-        type=Path,
-        default=DEFAULT_CSV,
     )
 
     parser.add_argument(
@@ -980,7 +912,6 @@ def main() -> int:
         collect_all(
             config_path=args.config,
             database_path=args.database,
-            csv_path=args.csv,
             raw_directory=args.raw_directory,
             cloud_directory=args.cloud_directory,
             request_delay=args.request_delay,

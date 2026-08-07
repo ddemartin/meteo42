@@ -255,6 +255,37 @@ eseguito **subito** uno scrape di prova invece di fidarsi — il file era già
 risalito di 84 MB. Regola che ne segue: **una migrazione dello schema non è
 finita finché non si è visto girare lo scraper sul DB migrato.**
 
+## 2026-08-07 — l'export CSV automatico sparisce, si esporta la selezione
+
+`export_csv` riscriveva **l'intero database** in fondo a ogni scrape: 208 MB
+rigenerati da zero, 4,85 s su un giro il cui lavoro utile ne dura ~17, cioè
+~5 GB di scritture SSD al giorno. Con le storie orarie in arrivo sarebbero
+diventati ~2,8 GB all'ora, **67 GB al giorno**.
+
+E non lo leggeva nessuno: né la dashboard, né l'importatore. Era la copia
+testuale di un database che sta già in Time Machine.
+
+**L'incrementale è la strada peggiore**, e vale la pena scriverlo perché è la
+prima che viene in mente: il file è ordinato per `(station_id, observation_at,
+variable_type)` e gli import storici inseriscono righe *in mezzo*: un append
+lascerebbe il file disordinato, oppure costringerebbe a riscriverlo comunque.
+
+Al suo posto, in fondo al tab Dati, un `st.download_button` che esporta **la
+selezione filtrata** — le stesse colonne di prima, `;` e BOM perché il consumo
+è Excel in locale italiano. In cache 60 s: `download_button` vuole i byte
+pronti a ogni rerun, quindi senza cache ogni interazione con la pagina
+rigenererebbe l'export.
+
+**⚠️ Quello che si è scoperto facendolo:** l'esportazione dalla dashboard **non
+esisteva**, benché il README la promettesse ("Esporta risultati") da luglio. Il
+bottone "Scarica dati ora" lancia lo scrape, non scarica niente. Togliere
+`export_csv` senza guardare avrebbe lasciato il progetto **senza alcuna via
+d'uscita dei dati** — il README l'avrebbe coperto, essendo già falso.
+
+Per l'intero database la via resta copiare `arpav_meteo.sqlite`, che è già un
+file solo. Il vecchio `arpav_meteo.csv` è stato cancellato: era rigenerabile
+byte per byte, e comunque non tornerà da solo.
+
 ---
 
 ## Domande aperte
@@ -275,12 +306,8 @@ finita finché non si è visto girare lo scraper sul DB migrato.**
   passare del tempo. Si fissa misurando i tempi di query della dashboard dopo
   la terza o quarta storia caricata; oggi le query di riferimento stanno sotto
   i 150 ms.
-- **⚠️ `export_csv` riscrive l'intero database a ogni scrape.** Oggi sono 208 MB
-  di CSV rigenerati da capo ogni ora, con una scansione completa di
-  `observations`. Alla fine degli import diventerebbero **~2,8 GB riscritti ogni
-  ora** su SSD, per un file che è la copia testuale di un DB già in Time
-  Machine. Va deciso *prima* che gli import finiscano: export su richiesta dalla
-  dashboard, oppure incrementale, oppure via del tutto.
+- ✅ **`export_csv` a ogni scrape** — chiusa il 2026-08-07, vedi la voce di quel
+  giorno.
 - **`station_name` ripetuto in ogni riga**, 32,5 MB prima del taglio, quando sta
   già in `stations`. E `downloaded_at` come testo ISO, 52 MB. Sono i due
   candidati successivi, ma valgono insieme meno di un decimo di ciò che si è
