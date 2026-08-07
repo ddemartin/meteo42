@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -61,12 +60,6 @@ def parse_file(path: Path, downloaded_at: str) -> list[tuple]:
             )
             observation_at = timestamp.isoformat(timespec="seconds")
 
-            raw_json = json.dumps(
-                record,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-
             for column, (
                 variable_type,
                 unit,
@@ -100,7 +93,6 @@ def parse_file(path: Path, downloaded_at: str) -> list[tuple]:
                         value_numeric,
                         unit,
                         downloaded_at,
-                        raw_json,
                     )
                 )
 
@@ -123,7 +115,6 @@ def parse_file(path: Path, downloaded_at: str) -> list[tuple]:
                         umid_avg,
                         "%",
                         downloaded_at,
-                        raw_json,
                     )
                 )
 
@@ -155,10 +146,9 @@ def main() -> None:
                 value_text,
                 value_numeric,
                 unit,
-                downloaded_at,
-                raw_json
+                downloaded_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )

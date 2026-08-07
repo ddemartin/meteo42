@@ -180,7 +180,6 @@ def initialize_database(connection: sqlite3.Connection) -> None:
             unit                TEXT,
 
             downloaded_at       TEXT NOT NULL,
-            raw_json            TEXT NOT NULL,
 
             PRIMARY KEY (
                 station_id,
@@ -201,13 +200,11 @@ def initialize_database(connection: sqlite3.Connection) -> None:
         """
     )
 
-    connection.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_observations_station_time
-        ON observations(station_id, observation_at)
-        """
-    )
-
+    # Nessun indice su (station_id, observation_at): e' un prefisso della chiave
+    # primaria (station_id, observation_at, variable_type), quindi il suo indice
+    # automatico serve gli stessi accessi. Esisteva, pesava 90 MB, e il planner
+    # lo preferiva solo perche' era piu' stretto; tolto quello ripiega sulla PK
+    # con lo stesso piano e senza rallentamenti misurabili (2026-08-07).
     connection.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_observations_variable_time
@@ -599,10 +596,9 @@ def insert_observations(
                 value_text,
                 value_numeric,
                 unit,
-                downloaded_at,
-                raw_json
+                downloaded_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 station_id,
@@ -617,11 +613,6 @@ def insert_observations(
                 to_float(record.get("valore")),
                 record.get("unitnm"),
                 downloaded_at,
-                json.dumps(
-                    record,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
             ),
         )
 

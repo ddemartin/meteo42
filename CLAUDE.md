@@ -1,5 +1,25 @@
 # meteo42
 
+README dice **cosa** c'è, qui c'è **come** si lavora e come si rimette in piedi
+la produzione, in [MEMORANDUM.md](MEMORANDUM.md) il **perché** delle scelte.
+
+## Sincronia della documentazione
+
+- **MEMORANDUM.md a ogni scelta.** Una decisione architetturale, un formato
+  dati, un default, una dipendenza aggiunta o scartata, un'approssimazione
+  accettata, un difetto osservato che ha motivato un cambiamento: si aggiunge
+  una voce datata con il criterio e l'alternativa scartata, **nello stesso
+  lavoro che introduce il cambiamento** — non dopo, quando il motivo è già
+  evaporato. Se una voce esistente viene smentita dai fatti, non si cancella:
+  si corregge dicendo cosa l'ha smentita. Le domande aperte in fondo si chiudono
+  con misure, non con previsioni.
+- **README.md a ogni funzione** nuova o cambiata: tab della dashboard, script,
+  tabelle dello schema, dipendenze in `requirements.txt`.
+- **CLAUDE.md quando cambia la produzione**: servizi launchd, accesso Tailscale,
+  procedure di riavvio. Qui vanno i sintomi e i rimedi, cioè ciò che serve
+  sotto mano quando qualcosa non funziona; il *perché* di quelle scelte sta nel
+  memorandum, con il rimando da qui.
+
 ## Dashboard in produzione
 
 `dashboard.py` gira come servizio launchd (`com.meteo42.dashboard`, porta 8501), non come processo lanciato a mano. Dopo ogni modifica a `dashboard.py` (o altro codice che il servizio importa), va riavviato per caricare la nuova versione:

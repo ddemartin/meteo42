@@ -66,6 +66,9 @@ Vedi [SCHEDULER_SETUP.md](SCHEDULER_SETUP.md) per installare i due servizi
 `launchd` (scraper e dashboard), e [CLAUDE.md](CLAUDE.md) per l'accesso
 Tailscale e la relativa diagnostica.
 
+Il **perché** delle scelte — a partire da quella di girare in `launchd` e non in
+Docker come gli altri progetti — sta in [MEMORANDUM.md](MEMORANDUM.md).
+
 ## Database Schema
 
 ### `stations`
@@ -101,12 +104,16 @@ Osservazioni meteorologiche:
 - `value_numeric`: Valore numerico
 - `unit`: Unità di misura
 - `downloaded_at`: Data download
-- `raw_json`: Dati JSON grezzi
+
+Chiave primaria `(station_id, observation_at, variable_type)`. Non si conserva
+la risposta grezza dell'API: vedi [MEMORANDUM.md](MEMORANDUM.md) (2026-08-07).
 
 Indici:
 - `idx_observations_time`: su `observation_at`
-- `idx_observations_station_time`: su `(station_id, observation_at)`
 - `idx_observations_variable_time`: su `(variable_type, observation_at)`
+
+Un indice su `(station_id, observation_at)` **non va aggiunto**: è un prefisso
+della chiave primaria, che serve già quegli accessi.
 
 ### `downloads`
 Log dei download:
