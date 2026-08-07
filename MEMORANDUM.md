@@ -286,6 +286,138 @@ Per l'intero database la via resta copiare `arpav_meteo.sqlite`, che è già un
 file solo. Il vecchio `arpav_meteo.csv` è stato cancellato: era rigenerabile
 byte per byte, e comunque non tornerà da solo.
 
+## 2026-08-07 — un argomento per scheda: previsioni e cielo escono dalla panoramica
+
+La panoramica faceva sei cose: condizioni di casa, report, grafici a 72 ore,
+Sole/Luna/pianeti, radar, bollettino. Il bollettino stava **in fondo**, dopo
+tutto il resto: la cosa che si consulta più spesso dopo «quanti gradi fa» era
+la più lontana da leggere, e su un telefono voleva mezzo minuto di scorrimento.
+
+Ora una scheda per argomento, e nell'ordine in cui si usano: **Adesso** (com'è
+ora, a casa e nei capoluoghi), **Previsioni** (radar e bollettino), **Cielo**
+(Sole, Luna, pianeti), poi diario, dati, grafici, storico, stazioni. Le
+stazioni vanno in fondo: sono amministrazione, si aprono tre volte l'anno.
+
+Il **radar sta con le previsioni e non con le osservazioni**, benché sia un
+dato osservato: la domanda a cui risponde è «piove tra un'ora?», la stessa del
+bollettino, e le due cose si leggono insieme.
+
+Le **ore di luce erano finite sotto la Luna**, in una `st.caption` accanto a
+sorgere e tramontare lunari, dove non c'entravano niente: la durata del giorno
+la decide il Sole. Sono risalite nel gruppo del Sole, come quarta tessera dopo
+alba, culmine e tramonto, e con l'occasione dicono anche quanto è cambiata
+rispetto a ieri — che è l'informazione per cui uno guarda la durata del giorno.
+
+**Alternativa scartata:** lasciare tutto in una scheda e riordinare soltanto.
+Non risolveva: la panoramica restava lunga quanto prima, e su un telefono la
+lunghezza è il problema.
+
+## 2026-08-07 — le variabili di tema di Streamlit non esistono più
+
+Le schede disegnate a mano (bollettino, diario) usavano `var(--primary-color)`,
+`var(--background-color)` e `var(--text-color)` dentro `color-mix()`, dando per
+scontato che Streamlit le esponesse. **Non le espone**, almeno dalla 1.60:
+misurato in Chrome con `getComputedStyle(document.documentElement)`, tutte e
+tre tornano stringa vuota, e nel foglio di stile della pagina non c'è nessuna
+proprietà personalizzata a parte le proprie.
+
+La conseguenza non era un errore ma qualcosa di peggio, perché silenzioso: una
+`color-mix()` con dentro una variabile inesistente è invalida, la dichiarazione
+cade, e le carte venivano disegnate **senza sfondo, senza bordo e con il
+"cappello" del colore del testo invece che del colore primario**. Sembravano
+semplicemente sciatte, e non c'era modo di accorgersi che era un guasto.
+
+Al loro posto niente dipendenze dal tema: **grigio neutro a bassa opacità**
+(`rgba(128,128,128,0.09)` per le superfici, `0.30` per i bordi) che su fondo
+bianco e su fondo quasi nero rende allo stesso modo, e `currentColor` per il
+testo secondario, che eredita il colore del tema qualunque esso sia. L'accento
+resta `#FF4B4B`, il primario di Streamlit, scritto esplicitamente.
+
+**Alternativa scartata:** leggere il tema da `st.context.theme` e generare il
+foglio di stile lato Python. Funzionerebbe, ma lega il codice a un'altra API di
+Streamlit per riottenere ciò che tre colori neutri danno senza legarsi a nulla.
+
+**Regola che ne segue:** una regola CSS che dipende da un'API di terzi va
+guardata **renderizzata**, non solo nel sorgente. Qui il codice era plausibile e
+l'output no, e nessun test che guardi il codice se ne sarebbe accorto.
+
+## 2026-08-07 — griglie CSS al posto di `st.columns`, per il telefono
+
+`st.columns` **non manda a capo**: quattro colonne restano quattro colonne
+anche a 390 px, e diventano quattro colonnine da una parola l'una. Le file di
+`st.metric` della panoramica e del diario erano esattamente questo.
+
+Le tessere sono ora HTML in una griglia `repeat(auto-fit, minmax(148px, 1fr))`,
+che si impagina da sé: quattro colonne sul desktop, due sul telefono, senza una
+media query. Stesso trattamento per i pianeti visibili, che erano un
+`st.dataframe` a cinque colonne — su un telefono una striscia da scorrere in
+orizzontale — e ora sono schede con il pallino del colore che hanno nel grafico
+delle altezze.
+
+Vincolo scoperto: **una griglia dev'essere una sola chiamata a `st.markdown`**.
+Streamlit chiude ogni markdown in un contenitore suo, quindi tessere emesse una
+per volta finiscono in griglie diverse, ognuna larga tutta la pagina. Da qui
+`m42_render_tiles`, che prende la lista e la stampa in un colpo solo.
+
+Per lo stesso motivo `get_visible_planets` restituisce ora **valori grezzi** e
+non stringhe già formattate: serviva ordinare per altezza e formattare altezza
+e magnitudine in modo diverso, cose che un DataFrame di stringhe non permette.
+
+**Alternativa scartata:** `st.columns` con un numero di colonne diverso a
+seconda della larghezza. Streamlit lato server la larghezza del browser non la
+conosce, quindi non si può.
+
+## 2026-08-07 — la carta di oggi è quella con meno mappe
+
+**Difetto osservato subito dopo il riordino:** la carta di oggi, resa larga
+tutta la riga perché è quella che si legge davvero, mostrava la mappa in mezzo
+a un vuoto enorme. Misurato: carta 980 px, **una sola** figura, traccia unica
+da 957 px, immagine sorgente 600×600 stirata a 957×990.
+
+La causa non è la griglia ma il dato: il bollettino ARPAV pubblica due mappe al
+giorno, mattino e pomeriggio, e **quella del mattino sparisce col passare della
+giornata**. Nel pomeriggio la carta di oggi ha una mappa mentre i giorni
+seguenti ne hanno due — cioè la carta più larga è proprio quella con meno da
+mettere dentro. In `repeat(auto-fit, minmax(210px, 1fr))` le tracce vuote
+collassano e l'unica rimasta si prende tutto.
+
+Sopra gli 820 px la carta in evidenza diventa **mappe a sinistra (260–340 px) e
+testo a destra**: la larghezza la usa il testo, che è la parte che si legge, e
+la mappa resta della misura delle altre. Sotto quella soglia resta impilata
+come prima. In più `max-width: 600px` sulle figure, la risoluzione nativa delle
+mappe ARPAV: oltre si sgranerebbero e basta.
+
+**Alternativa scartata:** togliere l'evidenza e rendere tutte le carte uguali.
+Risolveva il vuoto ma buttava via la ragione dell'evidenza — il testo di oggi
+finiva in una colonna da 317 px come quello di dopodomani.
+
+**Regola che ne segue:** una carta "in evidenza" va guardata **con i dati del
+momento peggiore**, non con quelli del momento in cui la si scrive. Al mattino
+questo difetto non esisteva.
+
+## 2026-08-07 — il diario si sfoglia col calendario, e i giorni sono in italiano
+
+La tendina dei giorni cresce di una voce al giorno: a un anno di distanza
+cercare «il 3 marzo» vuol dire scorrere trecento righe. Ora un `st.date_input`
+con `min_value`/`max_value` presi dagli estremi realmente in archivio.
+
+Dentro l'intervallo si può però cadere su un giorno **vuoto** — l'archivio non
+è per forza di giorni consecutivi. In quel caso si dice («per questo giorno non c'è
+niente in archivio»), non si nasconde: un calendario che accetta solo certi
+giorni e tace sugli altri fa sembrare guasta l'applicazione.
+
+**⚠️ Scoperto facendolo:** le date erano in inglese. `%A` segue la locale del
+processo, e il servizio launchd gira **senza `LANG`**: in mezzo a una dashboard
+tutta in italiano usciva «Friday 07/08/2026». Da qui `italian_date_label`, con
+i nomi dei giorni scritti a mano — impostare la locale del processo avrebbe
+toccato anche il parsing dei numeri, che qui non si vuole muovere.
+
+**Limite accettato:** l'intestazione del calendario di Streamlit (mese e
+iniziali dei giorni) resta in inglese e non è configurabile — verificato che
+con browser in `it-IT` cambia solo il primo giorno della settimana, che passa
+correttamente al lunedì. Sotto il campo c'è la data per esteso in italiano, che
+è ciò che si legge davvero.
+
 ---
 
 ## Domande aperte

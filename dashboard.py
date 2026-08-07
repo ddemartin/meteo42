@@ -37,6 +37,16 @@ NAKED_EYE_PLANETS = (
     if ephem is not None
     else []
 )
+# Condivisi tra il grafico delle altezze e le schede dei pianeti visibili: il
+# pallino della scheda e la linea del grafico devono essere lo stesso colore,
+# altrimenti le due viste vanno rilette una alla volta.
+PLANET_COLORS = {
+    "Mercurio": "#A78BFA",
+    "Venere": "#0EA5E9",
+    "Marte": "#EF4444",
+    "Giove": "#FB923C",
+    "Saturno": "#EAB308",
+}
 
 import scrape
 
@@ -56,6 +66,247 @@ st.set_page_config(
 )
 
 st.title("🌤️ Meteo42 dashboard")
+
+# Un solo foglio di stile per tutte le schede costruite a mano (panoramica,
+# cielo, previsioni, diario).
+#
+# I colori NON escono dalle variabili di tema di Streamlit: `--primary-color`,
+# `--background-color` e `--text-color` non esistono più (verificato su 1.60,
+# dove `getComputedStyle` le dà vuote), e le regole che le usavano rendevano
+# schede senza sfondo né bordo. Al loro posto grigio neutro a bassa opacità,
+# che su fondo bianco e su fondo scuro funziona uguale, e `currentColor` per
+# il testo secondario, che eredita il colore del tema qualunque esso sia.
+#
+# Le griglie sono `auto-fit`, non `st.columns`: le colonne di Streamlit restano
+# affiancate anche a 390px di larghezza, la griglia CSS invece va a capo da
+# sola. Vedi MEMORANDUM.md (2026-08-07).
+M42_STYLESHEET = """
+<style>
+:root {
+--m42-accent: #FF4B4B;
+--m42-surface: rgba(128, 128, 128, 0.09);
+--m42-border: rgba(128, 128, 128, 0.30);
+--m42-tint: rgba(255, 75, 75, 0.10);
+}
+.m42-eyebrow {
+display: block;
+color: var(--m42-accent);
+font-size: 0.74rem;
+font-weight: 750;
+letter-spacing: 0.06em;
+text-transform: uppercase;
+}
+.m42-head { margin: 0.35rem 0 0.9rem; }
+.m42-head h3 { margin: 0.2rem 0 0; font-size: clamp(1.15rem, 4.2vw, 1.5rem); }
+.m42-head p {
+margin: 0.3rem 0 0;
+color: color-mix(in srgb, currentColor 58%, transparent);
+font-size: 0.87rem;
+line-height: 1.45;
+max-width: 62ch;
+}
+.m42-grid {
+display: grid;
+gap: 0.6rem;
+grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+margin: 0.2rem 0 0.5rem;
+}
+.m42-grid-wide { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.m42-tile {
+padding: 0.8rem 0.9rem;
+border: 1px solid var(--m42-border);
+border-radius: 15px;
+background: var(--m42-surface);
+}
+.m42-tile-label {
+color: color-mix(in srgb, currentColor 58%, transparent);
+font-size: 0.78rem;
+font-weight: 650;
+}
+.m42-tile-value {
+margin-top: 0.22rem;
+font-size: clamp(1.25rem, 5.2vw, 1.55rem);
+font-weight: 700;
+line-height: 1.15;
+font-variant-numeric: tabular-nums;
+}
+.m42-tile-sub {
+margin-top: 0.22rem;
+color: color-mix(in srgb, currentColor 58%, transparent);
+font-size: 0.76rem;
+line-height: 1.35;
+}
+.m42-hero {
+padding: 1.05rem 1.15rem 1.15rem;
+border: 1px solid var(--m42-border);
+border-radius: 20px;
+background: linear-gradient(140deg,
+var(--m42-tint),
+var(--m42-surface) 65%);
+}
+.m42-hero-main {
+display: flex;
+flex-wrap: wrap;
+align-items: baseline;
+gap: 0.1rem 0.85rem;
+margin-top: 0.4rem;
+}
+.m42-hero-temp {
+font-size: clamp(2.7rem, 13vw, 3.6rem);
+font-weight: 800;
+line-height: 1;
+letter-spacing: -0.02em;
+font-variant-numeric: tabular-nums;
+}
+.m42-hero-note {
+color: color-mix(in srgb, currentColor 58%, transparent);
+font-size: clamp(0.85rem, 3.4vw, 1rem);
+font-weight: 650;
+}
+.m42-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.8rem; }
+.m42-chip {
+padding: 0.3rem 0.7rem;
+border: 1px solid var(--m42-border);
+border-radius: 999px;
+background: rgba(128, 128, 128, 0.13);
+font-size: 0.82rem;
+white-space: nowrap;
+}
+.m42-chip b { font-weight: 750; font-variant-numeric: tabular-nums; }
+.m42-stamp {
+display: block;
+margin-top: 0.75rem;
+color: color-mix(in srgb, currentColor 58%, transparent);
+font-size: 0.75rem;
+}
+.m42-planet {
+display: flex;
+align-items: center;
+gap: 0.65rem;
+padding: 0.7rem 0.85rem;
+border: 1px solid var(--m42-border);
+border-radius: 14px;
+background: var(--m42-surface);
+}
+.m42-planet-dot { flex: 0 0 auto; width: 11px; height: 11px; border-radius: 50%; }
+.m42-planet-body { flex: 1 1 auto; min-width: 0; }
+.m42-planet-name { font-weight: 700; font-size: 0.95rem; }
+.m42-planet-meta { color: color-mix(in srgb, currentColor 58%, transparent); font-size: 0.76rem; }
+.m42-planet-alt { font-size: 1.15rem; font-weight: 750; font-variant-numeric: tabular-nums; }
+.m42-note {
+margin: 0.3rem 0 0.6rem;
+padding: 0.85rem 1.05rem;
+border-left: 4px solid var(--m42-accent);
+border-radius: 0 14px 14px 0;
+background: rgba(255, 75, 75, 0.08);
+}
+.m42-note p { margin: 0.3rem 0 0; line-height: 1.55; }
+.forecast-grid {
+display: grid;
+grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+gap: 0.9rem;
+margin: 0.35rem 0 0.7rem;
+}
+.forecast-card {
+overflow: hidden;
+border: 1px solid var(--m42-border);
+border-radius: 18px;
+background: var(--m42-surface);
+}
+.forecast-card-featured {
+grid-column: 1 / -1;
+border-color: rgba(255, 75, 75, 0.45);
+}
+/* La carta di oggi occupa tutta la riga, ma è quella con MENO mappe: quella
+   del mattino sparisce col passare della giornata, e a fine pomeriggio ne
+   resta una sola. In griglia `auto-fit` la traccia unica si prendeva tutta la
+   larghezza e la mappa da 600px veniva stirata a ~960. Da qui in su mappe a
+   sinistra e testo a destra: la larghezza la usa il testo, che è quello che
+   si legge. Sotto questa soglia la carta resta impilata come le altre. */
+@media (min-width: 820px) {
+.forecast-card-featured {
+display: grid;
+grid-template-columns: minmax(260px, 340px) 1fr;
+grid-template-areas: "head head" "maps copy";
+align-items: start;
+}
+.forecast-card-featured header { grid-area: head; }
+.forecast-card-featured .forecast-maps {
+grid-area: maps;
+grid-template-columns: 1fr;
+}
+.forecast-card-featured .forecast-copy { grid-area: copy; font-size: 0.95rem; }
+}
+.forecast-card header {
+display: flex;
+flex-wrap: wrap;
+align-items: center;
+gap: 0.5rem;
+padding: 0.9rem 1rem 0.2rem;
+}
+.forecast-day {
+color: var(--m42-accent);
+font-size: 0.78rem;
+font-weight: 750;
+letter-spacing: 0.055em;
+text-transform: uppercase;
+}
+.forecast-badge {
+padding: 0.12rem 0.5rem;
+border-radius: 999px;
+background: var(--m42-accent);
+color: #fff;
+font-size: 0.68rem;
+font-weight: 750;
+letter-spacing: 0.05em;
+text-transform: uppercase;
+}
+.forecast-maps {
+display: grid;
+grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+gap: 0.6rem;
+padding: 0.65rem;
+justify-items: center;
+}
+/* Le mappe ARPAV sono 600x600: oltre non si ingrandiscono, si sgranerebbero. */
+.forecast-maps figure {
+overflow: hidden;
+margin: 0;
+width: 100%;
+max-width: 600px;
+border-radius: 12px;
+background: #edf3f5;
+}
+.forecast-maps img { display: block; width: 100%; height: auto; }
+.forecast-maps figcaption {
+padding: 0.42rem 0.65rem;
+color: #425466;
+font-size: 0.74rem;
+font-weight: 650;
+text-align: center;
+text-transform: capitalize;
+}
+.forecast-copy { padding: 0.55rem 1rem 1.1rem; font-size: 0.91rem; line-height: 1.5; }
+.weather-diary-story {
+margin: 0.4rem 0 1rem;
+padding: 1.15rem 1.25rem;
+border-radius: 18px;
+border: 1px solid var(--m42-border);
+background: linear-gradient(135deg,
+var(--m42-tint),
+var(--m42-surface));
+}
+.weather-diary-story h3 { margin: 0.2rem 0 0.65rem; }
+.weather-diary-story p { margin: 0; line-height: 1.58; }
+.weather-diary-story small { display: block; margin-top: 0.75rem; opacity: 0.65; }
+/* Con otto schede la barra deborda: si scorre in orizzontale, senza la barra
+   di scorrimento che su desktop mangerebbe una riga sotto le linguette. */
+.stTabs [data-baseweb="tab-list"] { overflow-x: auto; scrollbar-width: none; }
+.stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display: none; }
+.stTabs [data-baseweb="tab"] { white-space: nowrap; }
+</style>
+"""
+st.markdown(M42_STYLESHEET, unsafe_allow_html=True)
 
 VARIABLE_LABELS = {
     "TARIA2M": "Temperatura aria (2m)",
@@ -160,6 +411,45 @@ def render_chart(fig, **kwargs) -> None:
     st.plotly_chart(fig, config=PLOTLY_CONFIG, **kwargs)
 
 
+def m42_section(title: str, eyebrow: str = "", subtitle: str = "") -> None:
+    """Section heading with an optional kicker and one line of orientation."""
+    parts = ['<div class="m42-head">']
+    if eyebrow:
+        parts.append(f'<span class="m42-eyebrow">{html.escape(eyebrow)}</span>')
+    parts.append(f"<h3>{html.escape(title)}</h3>")
+    if subtitle:
+        parts.append(f"<p>{html.escape(subtitle)}</p>")
+    parts.append("</div>")
+    st.markdown("".join(parts), unsafe_allow_html=True)
+
+
+def m42_tile(label: str, value: str, sub: str = "") -> str:
+    """One stat tile, as HTML: `m42_render_tiles` puts a row of them on screen."""
+    sub_html = f'<div class="m42-tile-sub">{html.escape(sub)}</div>' if sub else ""
+    return (
+        '<div class="m42-tile">'
+        f'<div class="m42-tile-label">{html.escape(label)}</div>'
+        f'<div class="m42-tile-value">{html.escape(value)}</div>'
+        f"{sub_html}</div>"
+    )
+
+
+def m42_render_tiles(tiles: list[str], wide: bool = False) -> None:
+    """Emit tiles as a single grid.
+
+    Una sola chiamata a `st.markdown` per l'intera griglia: Streamlit chiude
+    ogni markdown in un contenitore suo, e tessere emesse una per volta
+    finirebbero in griglie diverse, ognuna larga tutta la pagina.
+    """
+    if not tiles:
+        return
+    grid_class = "m42-grid m42-grid-wide" if wide else "m42-grid"
+    st.markdown(
+        f'<div class="{grid_class}">{"".join(tiles)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def observation_series_to_local(series: pd.Series) -> pd.Series:
     """Interpret observation timestamps as ora solare and show them local."""
     return (
@@ -261,10 +551,35 @@ def get_forecast_image_data_url(image_url: str) -> str:
     return f"data:{content_type};base64,{encoded}"
 
 
+def render_radar_nowcast() -> None:
+    """Latest ARPAV radar mosaic: what is falling right now, before the forecast."""
+    m42_section(
+        "Radar precipitazioni Nord-Est",
+        eyebrow="Adesso · nowcast",
+        subtitle=(
+            "Il mosaico ARPAV degli ultimi minuti. Intensità: verde debole, "
+            "giallo moderata, rosso e viola forte."
+        ),
+    )
+    try:
+        radar = get_latest_arpav_radar()
+    except requests.exceptions.RequestException:
+        st.info("Radar momentaneamente non raggiungibile.")
+    else:
+        if radar is None:
+            st.info("Immagine radar temporaneamente non disponibile.")
+        else:
+            st.image(radar["image"], width="stretch")
+            st.caption(
+                "Mosaico aggiornato alle "
+                f"{radar['observed_at'].strftime('%H:%M del %d/%m/%Y')} "
+                "(ora locale)."
+            )
+    st.link_button("Apri il radar originale", ARPAV_RADAR_PAGE_URL)
+
+
 def render_forecast_bulletin() -> None:
     """Render the full forecast bulletin in responsive illustrated cards."""
-    st.divider()
-    st.write("### 📆 Previsioni Meteo42")
     try:
         forecast = get_forecast_bulletin()
     except (requests.exceptions.RequestException, ET.ParseError):
@@ -276,10 +591,10 @@ def render_forecast_bulletin() -> None:
 
     if forecast["evolution"]:
         st.markdown(
-            '<div class="forecast-outlook">'
-            '<span class="forecast-eyebrow">Scenario</span>'
+            '<div class="m42-note">'
+            '<span class="m42-eyebrow">Scenario</span>'
             f'<p>{html.escape(forecast["evolution"])}</p>'
-            '</div>',
+            "</div>",
             unsafe_allow_html=True,
         )
 
@@ -292,88 +607,29 @@ def render_forecast_bulletin() -> None:
             except requests.exceptions.RequestException:
                 continue
             figures.append(
-                '<figure>'
+                "<figure>"
                 f'<img src="{html.escape(image_src, quote=True)}" '
                 f'alt="Previsione {html.escape(image["caption"], quote=True)}">'
                 f'<figcaption>{html.escape(image["caption"])}</figcaption>'
-                '</figure>'
+                "</figure>"
             )
         forecast_text = html.escape(day["text"]).replace("\n", "<br><br>")
+        # Il primo giorno occupa tutta la riga: è quello che si legge davvero,
+        # e le sue mappe stanno affiancate invece che in colonna stretta.
         today_class = " forecast-card-featured" if index == 0 else ""
+        badge = '<span class="forecast-badge">Oggi</span>' if index == 0 else ""
         cards.append(
             f'<article class="forecast-card{today_class}">'
-            '<header>'
+            "<header>"
             f'<span class="forecast-day">{html.escape(day["date"])}</span>'
-            '</header>'
+            f"{badge}</header>"
             f'<div class="forecast-maps">{"".join(figures)}</div>'
             f'<div class="forecast-copy">{forecast_text}</div>'
-            '</article>'
+            "</article>"
         )
 
     st.markdown(
-        """
-        <style>
-        .forecast-outlook {
-            margin: 0.25rem 0 1rem;
-            padding: 1rem 1.15rem;
-            border-left: 4px solid var(--primary-color);
-            border-radius: 0 14px 14px 0;
-            background: color-mix(in srgb, var(--primary-color) 8%, transparent);
-        }
-        .forecast-outlook p { margin: 0.35rem 0 0; line-height: 1.5; }
-        .forecast-eyebrow, .forecast-day {
-            font-size: 0.78rem;
-            font-weight: 750;
-            letter-spacing: 0.055em;
-            text-transform: uppercase;
-            color: var(--primary-color);
-        }
-        .forecast-grid {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 1rem;
-            margin: 0.35rem 0 0.7rem;
-        }
-        .forecast-card {
-            overflow: hidden;
-            border: 1px solid color-mix(in srgb, var(--text-color) 14%, transparent);
-            border-radius: 17px;
-            background: color-mix(in srgb, var(--background-color) 96%, var(--text-color));
-            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.06);
-        }
-        .forecast-card-featured { grid-column: 1 / -1; }
-        .forecast-card header { padding: 0.9rem 1rem 0.15rem; }
-        .forecast-maps {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 0.6rem;
-            padding: 0.65rem;
-        }
-        .forecast-maps figure {
-            overflow: hidden;
-            margin: 0;
-            border-radius: 12px;
-            background: #edf3f5;
-        }
-        .forecast-maps img { display: block; width: 100%; height: auto; }
-        .forecast-maps figcaption {
-            padding: 0.42rem 0.65rem;
-            color: #425466;
-            font-size: 0.74rem;
-            font-weight: 650;
-            text-align: center;
-            text-transform: capitalize;
-        }
-        .forecast-copy { padding: 0.55rem 1rem 1.1rem; font-size: 0.91rem; line-height: 1.48; }
-        @media (max-width: 760px) {
-            .forecast-grid { grid-template-columns: 1fr; }
-            .forecast-card-featured { grid-column: auto; }
-        }
-        </style>
-        <div class="forecast-grid">
-        """
-        + "".join(cards)
-        + "</div>",
+        '<div class="forecast-grid">' + "".join(cards) + "</div>",
         unsafe_allow_html=True,
     )
     st.caption(f"Aggiornamento: {forecast['emission']}.")
@@ -1432,6 +1688,70 @@ def find_nearest_stations(stations_df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def find_home_station(stations_df: pd.DataFrame):
+    """The home station row with usable coordinates, or None.
+
+    Serve in più schede (panoramica, cielo, diario), che in Streamlit girano
+    tutte a ogni rerun: la ricerca sta qui una volta sola.
+    """
+    candidates = stations_df[
+        stations_df["station_name"]
+        .str.lower()
+        .str.contains(HOME_STATION_HINT, na=False)
+        & stations_df["latitudine"].notna()
+        & stations_df["longitudine"].notna()
+    ]
+    return None if candidates.empty else candidates.iloc[0]
+
+
+def get_home_conditions(station_id: str) -> dict | None:
+    """Latest reading of each headline variable, for the overview hero."""
+    observations = get_observations_df(station_id=station_id, days=2)
+    if observations.empty:
+        return None
+
+    latest = {}
+    for variable in ("TARIA2M", "UMID2M", "VVENTO10M", "DVENTO10M", "PRESS"):
+        readings = observations[
+            (observations["variable_type"] == variable)
+            & observations["value_numeric"].notna()
+        ]
+        if not readings.empty:
+            row = readings.loc[readings["observation_at"].idxmax()]
+            latest[variable] = (row["value_numeric"], row["observation_at"])
+
+    if "TARIA2M" not in latest:
+        return None
+
+    today = datetime.now(ZoneInfo(HOME_TIMEZONE)).date()
+    rain_today = observations[
+        (observations["variable_type"] == "PREC")
+        & observations["value_numeric"].notna()
+        & (observations["observation_at"].dt.date == today)
+    ]
+
+    temperature, observed_at = latest["TARIA2M"]
+    conditions = {
+        "temperature": temperature,
+        "observed_at": observed_at,
+        "humidity": latest["UMID2M"][0] if "UMID2M" in latest else None,
+        "wind_speed": latest["VVENTO10M"][0] if "VVENTO10M" in latest else None,
+        "wind_direction": (
+            latest["DVENTO10M"][0] if "DVENTO10M" in latest else None
+        ),
+        "pressure": latest["PRESS"][0] if "PRESS" in latest else None,
+        "rain_today": (
+            rain_today["value_numeric"].sum() if not rain_today.empty else None
+        ),
+        "perceived": None,
+    }
+    if conditions["humidity"] is not None:
+        conditions["perceived"] = float(
+            heat_index_celsius(temperature, conditions["humidity"])
+        )
+    return conditions
+
+
 def get_latest_temperatures(station_ids: list) -> pd.DataFrame:
     """Latest TARIA2M reading per station."""
     if not station_ids:
@@ -1765,13 +2085,6 @@ def build_sun_altitude_figure(
             )
         )
 
-        planet_colors = {
-            "Mercurio": "#A78BFA",
-            "Venere": "#0EA5E9",
-            "Marte": "#EF4444",
-            "Giove": "#FB923C",
-            "Saturno": "#EAB308",
-        }
         for planet_name, planet_type in NAKED_EYE_PLANETS:
             planet_altitudes = _ephem_altitudes(lat, lon, moments, planet_type)
             all_altitudes.extend(planet_altitudes)
@@ -1780,7 +2093,7 @@ def build_sun_altitude_figure(
                     x=moments,
                     y=planet_altitudes,
                     mode="lines",
-                    line=dict(color=planet_colors[planet_name], width=2),
+                    line=dict(color=PLANET_COLORS[planet_name], width=2),
                     name=planet_name,
                     hovertemplate="%{x|%H:%M} · %{y:.1f}°<extra></extra>",
                 )
@@ -1805,7 +2118,7 @@ def build_sun_altitude_figure(
             current_bodies = [
                 ("Luna", ephem.Moon, "#94A3B8"),
                 *[
-                    (planet_name, planet_type, planet_colors[planet_name])
+                    (planet_name, planet_type, PLANET_COLORS[planet_name])
                     for planet_name, planet_type in NAKED_EYE_PLANETS
                 ],
             ]
@@ -1881,11 +2194,15 @@ def moon_phase_icon(phase_day: float) -> str:
     return icons[int(phase_day // 3.5) % len(icons)]
 
 
-def get_visible_planets(lat: float, lon: float, target_date) -> pd.DataFrame:
-    """Rank naked-eye planets observable during the current local night."""
-    columns = ["Pianeta", "Visibilità", "Ora migliore", "Altezza", "Magnitudine"]
+def get_visible_planets(lat: float, lon: float, target_date) -> list[dict]:
+    """Naked-eye planets observable during the local night, best first.
+
+    Restituisce valori grezzi e non stringhe già formattate: le schede dei
+    pianeti mostrano altezza e magnitudine con formati diversi, e ordinano per
+    altezza.
+    """
     if ephem is None:
-        return pd.DataFrame(columns=columns)
+        return []
 
     tzinfo = ZoneInfo(HOME_TIMEZONE)
     today_times = compute_sun_times(lat, lon, target_date)
@@ -1921,23 +2238,40 @@ def get_visible_planets(lat: float, lon: float, target_date) -> pd.DataFrame:
             continue
         altitude, best_time, magnitude = max(candidates, key=lambda item: item[0])
         midpoint = start + (end - start) / 2
-        visibility = "sera" if best_time <= midpoint else "mattino"
         rows.append(
             {
-                "Pianeta": italian_name,
-                "Visibilità": visibility,
-                "Ora migliore": best_time.strftime("%H:%M"),
-                "Altezza": f"{altitude:.0f}°",
-                "Magnitudine": f"{magnitude:.1f}",
+                "name": italian_name,
+                "visibility": "sera" if best_time <= midpoint else "mattino",
+                "best_time": best_time,
+                "altitude": altitude,
+                "magnitude": magnitude,
             }
         )
-    return pd.DataFrame(rows, columns=columns)
+    return sorted(rows, key=lambda row: row["altitude"], reverse=True)
 
 
 def format_timedelta_hm(delta: timedelta) -> str:
     total_minutes = int(delta.total_seconds() // 60)
     hours, minutes = divmod(total_minutes, 60)
     return f"{hours}h {minutes:02d}m"
+
+
+ITALIAN_WEEKDAYS = [
+    "lunedì", "martedì", "mercoledì", "giovedì",
+    "venerdì", "sabato", "domenica",
+]
+
+
+def italian_date_label(value, with_time: bool = False) -> str:
+    """«Venerdì 07/08/2026».
+
+    I nomi dei giorni sono a mano perché `%A` segue la locale del processo, e
+    il servizio launchd gira senza `LANG`: dava «Friday» in mezzo a una
+    dashboard tutta in italiano.
+    """
+    weekday = ITALIAN_WEEKDAYS[value.weekday()].capitalize()
+    pattern = "%d/%m/%Y · %H:%M" if with_time else "%d/%m/%Y"
+    return f"{weekday} {value.strftime(pattern)}"
 
 
 def heat_index_celsius(temp_c, humidity_pct):
@@ -2509,6 +2843,173 @@ def build_compact_timeseries(
     return fig
 
 
+def render_now_hero(station_name: str, conditions: dict) -> None:
+    """Current conditions as one glanceable block: the answer to «com'è adesso»."""
+    note = ""
+    perceived = conditions["perceived"]
+    # L'indice di calore sotto i ~27°C coincide con la temperatura: mostrarlo
+    # sempre aggiungerebbe una riga che non dice nulla per mezzo anno.
+    if perceived is not None and perceived - conditions["temperature"] >= 0.5:
+        muggy = describe_muggy_level(perceived)
+        note = f"percepiti {perceived:.1f}°" + (f" · {muggy}" if muggy else "")
+
+    chips = []
+    if conditions["humidity"] is not None:
+        chips.append(f"💧 Umidità <b>{conditions['humidity']:.0f}%</b>")
+    if conditions["wind_speed"] is not None:
+        wind = f"{conditions['wind_speed']:.1f} m/s"
+        if conditions["wind_direction"] is not None:
+            wind += f" da {degrees_to_compass(conditions['wind_direction'])}"
+        chips.append(f"🌬️ Vento <b>{wind}</b>")
+    if conditions["rain_today"] is not None:
+        chips.append(f"🌧️ Pioggia oggi <b>{conditions['rain_today']:.1f} mm</b>")
+    if conditions["pressure"] is not None:
+        chips.append(f"🧭 Pressione <b>{conditions['pressure']:.0f} hPa</b>")
+
+    chips_html = "".join(f'<span class="m42-chip">{chip}</span>' for chip in chips)
+    note_html = f'<span class="m42-hero-note">{html.escape(note)}</span>' if note else ""
+    st.markdown(
+        '<div class="m42-hero">'
+        f'<span class="m42-eyebrow">Adesso · {html.escape(station_name)}</span>'
+        '<div class="m42-hero-main">'
+        f'<span class="m42-hero-temp">{conditions["temperature"]:.1f}°</span>'
+        f"{note_html}</div>"
+        f'<div class="m42-chips">{chips_html}</div>'
+        '<small class="m42-stamp">Ultima lettura alle '
+        f'{conditions["observed_at"].strftime("%H:%M del %d/%m/%Y")}</small>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def format_day_length_delta(delta: timedelta) -> str:
+    """«+2 min su ieri». `format_timedelta_hm` non serve: qui il segno conta e
+    la differenza tra due giorni consecutivi sta sempre in pochi minuti."""
+    minutes = round(delta.total_seconds() / 60)
+    if minutes == 0:
+        return "come ieri"
+    # Meno tipografico, non trattino: sta accanto ai «−6°» del resto del cielo.
+    sign = "+" if minutes > 0 else "−"
+    return f"{sign}{abs(minutes)} min su ieri"
+
+
+def render_visible_planets(planets: list[dict]) -> None:
+    """Naked-eye planets as cards; the dot colour matches the altitude chart."""
+    if ephem is None:
+        st.info(
+            "Installa le dipendenze aggiornate per abilitare il calcolo dei "
+            "pianeti."
+        )
+        return
+    if not planets:
+        st.info(
+            "Stanotte nessun pianeta maggiore supera i 10° con il cielo "
+            "abbastanza scuro."
+        )
+        return
+
+    cards = []
+    for planet in planets:
+        color = PLANET_COLORS.get(planet["name"], "#94A3B8")
+        when = "di sera" if planet["visibility"] == "sera" else "al mattino"
+        cards.append(
+            '<div class="m42-planet">'
+            f'<span class="m42-planet-dot" style="background:{color}"></span>'
+            '<div class="m42-planet-body">'
+            f'<div class="m42-planet-name">{html.escape(planet["name"])}</div>'
+            f'<div class="m42-planet-meta">{when} · al meglio alle '
+            f'{planet["best_time"].strftime("%H:%M")} · '
+            f'magnitudine {planet["magnitude"]:.1f}</div>'
+            "</div>"
+            f'<span class="m42-planet-alt">{planet["altitude"]:.0f}°</span>'
+            "</div>"
+        )
+    st.markdown(
+        f'<div class="m42-grid m42-grid-wide">{"".join(cards)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_sky_section(lat: float, lon: float, target_date) -> None:
+    """Sun, moon and planets for one day: times, trajectories, visibility."""
+    sun_times = compute_sun_times(lat, lon, target_date)
+    yesterday_times = compute_sun_times(lat, lon, target_date - timedelta(days=1))
+    peak_altitude = sun_elevation(
+        Observer(latitude=lat, longitude=lon), sun_times["noon"]
+    )
+
+    m42_section(
+        "Il Sole",
+        eyebrow="Cielo di oggi",
+        subtitle=(
+            "Alba e tramonto sono calcolati per Mogliano Veneto, orizzonte "
+            "libero e senza rilievi."
+        ),
+    )
+    m42_render_tiles(
+        [
+            m42_tile("🌅 Alba", sun_times["sunrise"].strftime("%H:%M")),
+            m42_tile(
+                "☀️ Culmine",
+                sun_times["noon"].strftime("%H:%M"),
+                f"{peak_altitude:.0f}° sull'orizzonte",
+            ),
+            m42_tile("🌇 Tramonto", sun_times["sunset"].strftime("%H:%M")),
+            # La durata del giorno sta qui, con il Sole che la determina, e non
+            # accanto alla Luna dov'era finita.
+            m42_tile(
+                "⏳ Ore di luce",
+                format_timedelta_hm(sun_times["day_length"]),
+                f"notte {format_timedelta_hm(sun_times['night_length'])} · "
+                + format_day_length_delta(
+                    sun_times["day_length"] - yesterday_times["day_length"]
+                ),
+            ),
+        ]
+    )
+
+    moon_details = get_moon_details(lat, lon, target_date)
+    moonrise = moon_details["moonrise"]
+    moonset = moon_details["moonset"]
+    m42_section("La Luna", eyebrow="Cielo di oggi")
+    m42_render_tiles(
+        [
+            m42_tile(
+                f"{moon_phase_icon(moon_details['phase_day'])} Fase",
+                moon_details["phase"].capitalize(),
+                f"{moon_details['illumination']:.0f}% illuminata",
+            ),
+            m42_tile(
+                "🌙 Sorge", moonrise.strftime("%H:%M") if moonrise else "—"
+            ),
+            m42_tile(
+                "🌘 Tramonta", moonset.strftime("%H:%M") if moonset else "—"
+            ),
+        ]
+    )
+
+    m42_section(
+        "Percorsi nel cielo",
+        eyebrow="Cielo di oggi",
+        subtitle=(
+            "Altezza sull'orizzonte di Sole, Luna e pianeti nell'arco della "
+            "giornata. Le fasce sotto lo zero sono i crepuscoli: civile, "
+            "nautico e astronomico."
+        ),
+    )
+    render_chart(build_sun_altitude_figure(lat, lon, target_date))
+
+    m42_section(
+        "Pianeti a occhio nudo",
+        eyebrow="Stanotte",
+        subtitle=(
+            "Pianeti che superano i 10° sull'orizzonte con il Sole sotto i "
+            "−6°. Nuvole e ostacoli locali non sono considerati."
+        ),
+    )
+    render_visible_planets(get_visible_planets(lat, lon, target_date))
+
+
 def render_overview_72h_charts(station_id: str) -> None:
     """Render temperature, humidity and heat-stress indicators for 72 hours."""
     observations = get_observations_df(station_id=station_id, days=3)
@@ -2532,8 +3033,11 @@ def render_overview_72h_charts(station_id: str) -> None:
             matched["temperatura"], matched["umidita"]
         )
 
-    st.divider()
-    st.subheader("📈 Ultime 72 ore")
+    m42_section(
+        "Ultime 72 ore",
+        eyebrow="Andamento",
+        subtitle="Orari locali, letture della stazione di casa.",
+    )
     first_row_left, first_row_right = st.columns(2)
     with first_row_left:
         if not temperature.empty:
@@ -2621,266 +3125,208 @@ def render_overview_72h_charts(station_id: str) -> None:
 
 
 # Tabs
-tab0, tab5, tab1, tab2, tab3, tab4 = st.tabs(
+# Un argomento per scheda, e le schede in ordine di frequenza d'uso: prima
+# «com'è adesso», poi «come sarà», poi il resto. Le previsioni stanno in una
+# scheda propria e non più in fondo alla panoramica, e il cielo — Sole, Luna,
+# pianeti — ha la sua invece di stare in mezzo alle osservazioni.
+(
+    tab_now,
+    tab_forecast,
+    tab_sky,
+    tab_diary,
+    tab_data,
+    tab_charts,
+    tab_history,
+    tab_stations,
+) = st.tabs(
     [
-        "📍 Panoramica",
+        "📍 Adesso",
+        "🔭 Previsioni",
+        "🌌 Cielo",
         "🕰️ Che tempo fece",
         "📊 Dati",
-        "⚙️ Stazioni",
         "📈 Grafici",
         "📅 Storico Annuale",
+        "⚙️ Stazioni",
     ]
 )
 
-# TAB 0: Overview
-with tab0:
-    st.subheader("Panoramica Veneto")
+overview_stations_df = get_stations_from_db()
+home_row = find_home_station(overview_stations_df)
+local_today = datetime.now(ZoneInfo(HOME_TIMEZONE)).date()
 
-    overview_stations_df = get_stations_from_db()
-    nearest_df = find_nearest_stations(overview_stations_df)
-
-    home_candidates = overview_stations_df[
-        overview_stations_df["station_name"]
-        .str.lower()
-        .str.contains(HOME_STATION_HINT, na=False)
-        & overview_stations_df["latitudine"].notna()
-    ]
-
-    home_row = None
-    if not home_candidates.empty:
-        home_row = home_candidates.iloc[0]
-        home_entry = pd.DataFrame(
-            [
-                {
-                    "label": "Mogliano Veneto (casa)",
-                    "station_id": home_row["station_id"],
-                    "station_name": home_row["station_name"],
-                    "latitudine": home_row["latitudine"],
-                    "longitudine": home_row["longitudine"],
-                }
-            ]
-        )
-        overview_points = pd.concat(
-            [nearest_df, home_entry], ignore_index=True
+# TAB: Adesso
+with tab_now:
+    if home_row is None:
+        st.info(
+            "Nessuna stazione «Mogliano Veneto» con coordinate: aggiungila in "
+            "⚙️ Stazioni per vedere qui i dati di casa."
         )
     else:
-        overview_points = nearest_df
+        home_conditions = get_home_conditions(home_row["station_id"])
+        if home_conditions is None:
+            st.info("Nessuna lettura recente per la stazione di casa.")
+        else:
+            render_now_hero(home_row["station_name"], home_conditions)
 
-    if overview_points.empty:
+        sun_times = compute_sun_times(
+            home_row["latitudine"], home_row["longitudine"], local_today
+        )
+        sun_context = (
+            f"Alba alle {sun_times['sunrise'].strftime('%H:%M')}, "
+            f"culmine alle {sun_times['noon'].strftime('%H:%M')}, "
+            f"tramonto alle {sun_times['sunset'].strftime('%H:%M')} "
+            f"(giorno di {format_timedelta_hm(sun_times['day_length'])}). "
+            f"Fase lunare: {get_moon_phase_label(local_today)}."
+        )
+
+        m42_section(
+            "Come sta andando",
+            eyebrow=f"Report · {home_row['station_name']}",
+        )
+        use_ai_report = st.toggle("✨ Riassunto AI", key="use_ai_report")
+
+        structured_report = build_station_report(
+            home_row["station_id"], home_row["station_name"]
+        )
+        if use_ai_report:
+            try:
+                historical_highlights = compute_historical_highlights(
+                    home_row["station_id"]
+                )
+                st.markdown(
+                    generate_narrative_report(
+                        structured_report,
+                        home_row["station_name"],
+                        historical_highlights,
+                        sun_context,
+                        current_narrative_style(),
+                    )
+                )
+            except requests.exceptions.Timeout:
+                st.caption(
+                    "⚠️ Ollama sta impiegando troppo tempo a rispondere "
+                    "(modello ancora in caricamento?), mostro il report "
+                    "standard."
+                )
+            except requests.exceptions.RequestException:
+                st.caption(
+                    f"⚠️ Ollama non raggiungibile su {OLLAMA_BASE_URL}, "
+                    "mostro il report standard."
+                )
+                st.markdown(structured_report)
+        else:
+            st.markdown(structured_report)
+
+        render_overview_72h_charts(home_row["station_id"])
+
+    nearest_df = find_nearest_stations(overview_stations_df)
+    if home_row is not None and not nearest_df.empty:
+        nearest_df = pd.concat(
+            [
+                nearest_df,
+                pd.DataFrame(
+                    [
+                        {
+                            "label": "Mogliano Veneto (casa)",
+                            "station_id": home_row["station_id"],
+                            "station_name": home_row["station_name"],
+                            "latitudine": home_row["latitudine"],
+                            "longitudine": home_row["longitudine"],
+                        }
+                    ]
+                ),
+            ],
+            ignore_index=True,
+        )
+
+    if nearest_df.empty:
         st.info(
             "Nessuna stazione con coordinate disponibili: aggiungi "
             "latitudine/longitudine in station_metadata per abilitare "
             "la panoramica territoriale."
         )
     else:
-        latest_temps = get_latest_temperatures(
-            overview_points["station_id"].unique().tolist()
+        m42_section(
+            "Temperature in Veneto",
+            eyebrow="Capoluoghi",
+            subtitle=(
+                "Ultima lettura della stazione più vicina a ogni capoluogo."
+            ),
         )
-        overview_points = overview_points.merge(
-            latest_temps, on="station_id", how="left"
+        veneto_temps = nearest_df.merge(
+            get_latest_temperatures(
+                nearest_df["station_id"].unique().tolist()
+            ),
+            on="station_id",
+            how="left",
         )
-        overview_points["temp_text"] = overview_points["value_numeric"].apply(
-            lambda v: f"{v:.1f}°C" if pd.notna(v) else "n/d"
-        )
-        if home_row is not None:
-            has_coords = pd.notna(home_row["latitudine"]) and pd.notna(
-                home_row["longitudine"]
-            )
-            sun_times = None
-            sun_context = ""
-            if has_coords:
-                local_today = datetime.now(ZoneInfo(HOME_TIMEZONE)).date()
-                sun_times = compute_sun_times(
-                    home_row["latitudine"],
-                    home_row["longitudine"],
-                    local_today,
-                )
-                moon_label = get_moon_phase_label(local_today)
-                sun_context = (
-                    f"Alba alle {sun_times['sunrise'].strftime('%H:%M')}, "
-                    f"culmine alle {sun_times['noon'].strftime('%H:%M')}, "
-                    f"tramonto alle {sun_times['sunset'].strftime('%H:%M')} "
-                    f"(giorno di {format_timedelta_hm(sun_times['day_length'])}). "
-                    f"Fase lunare: {moon_label}."
-                )
-
-            st.divider()
-            report_header_col, report_toggle_col = st.columns([3, 1])
-            with report_header_col:
-                st.subheader(f"Report — {home_row['station_name']}")
-            with report_toggle_col:
-                use_ai_report = st.toggle("✨ Riassunto AI", key="use_ai_report")
-
-            structured_report = build_station_report(
-                home_row["station_id"], home_row["station_name"]
-            )
-            if use_ai_report:
-                try:
-                    historical_highlights = compute_historical_highlights(
-                        home_row["station_id"]
-                    )
-                    st.markdown(
-                        generate_narrative_report(
-                            structured_report,
-                            home_row["station_name"],
-                            historical_highlights,
-                            sun_context,
-                            current_narrative_style(),
-                        )
-                    )
-                except requests.exceptions.Timeout:
-                    st.caption(
-                        "⚠️ Ollama sta impiegando troppo tempo a rispondere "
-                        "(modello ancora in caricamento?), mostro il report "
-                        "standard."
-                    )
-                except requests.exceptions.RequestException:
-                    st.caption(
-                        f"⚠️ Ollama non raggiungibile su {OLLAMA_BASE_URL}, "
-                        "mostro il report standard."
-                    )
-                    st.markdown(structured_report)
-            else:
-                st.markdown(structured_report)
-
-            render_overview_72h_charts(home_row["station_id"])
-
-            if has_coords:
-                st.divider()
-                st.subheader("🌌 Cielo di oggi")
-
-                sunrise_col, noon_col, sunset_col = st.columns(3)
-                sunrise_col.metric("🌅 Sorge", sun_times["sunrise"].strftime("%H:%M"))
-                noon_col.metric("🕛 Culmina", sun_times["noon"].strftime("%H:%M"))
-                sunset_col.metric("🌇 Tramonta", sun_times["sunset"].strftime("%H:%M"))
-
-                visible_planets = get_visible_planets(
-                    home_row["latitudine"],
-                    home_row["longitudine"],
-                    local_today,
-                )
-                render_chart(
-                    build_sun_altitude_figure(
-                        home_row["latitudine"],
-                        home_row["longitudine"],
-                        local_today,
+        # Tessere e non `st.dataframe`: una tabella a due colonne su un
+        # telefono diventa una striscia stretta da scorrere, la griglia si
+        # impagina da sola su una, due o quattro colonne.
+        m42_render_tiles(
+            [
+                m42_tile(
+                    row["label"],
+                    (
+                        f"{row['value_numeric']:.1f}°"
+                        if pd.notna(row["value_numeric"])
+                        else "n/d"
+                    ),
+                    (
+                        row["observation_at"].strftime("alle %H:%M")
+                        if pd.notna(row["observation_at"])
+                        else ""
                     ),
                 )
-
-                moon_details = get_moon_details(
-                    home_row["latitudine"],
-                    home_row["longitudine"],
-                    local_today,
-                )
-                moon_col, planets_col = st.columns([1, 2])
-                with moon_col:
-                    st.write("#### Luna")
-                    st.metric(
-                        f"{moon_phase_icon(moon_details['phase_day'])} Fase",
-                        moon_details["phase"].capitalize(),
-                        f"{moon_details['illumination']:.0f}% illuminata",
-                    )
-                    moonrise = moon_details["moonrise"]
-                    moonset = moon_details["moonset"]
-                    st.write(
-                        f"**Sorge:** {moonrise.strftime('%H:%M') if moonrise else '—'}  "
-                        f"\n**Tramonta:** {moonset.strftime('%H:%M') if moonset else '—'}"
-                    )
-                    st.caption(
-                        f"Giorno: {format_timedelta_hm(sun_times['day_length'])} · "
-                        f"Notte: {format_timedelta_hm(sun_times['night_length'])}"
-                    )
-
-                with planets_col:
-                    st.write("#### Pianeti visibili a occhio nudo")
-                    if ephem is None:
-                        st.info(
-                            "Installa le dipendenze aggiornate per abilitare "
-                            "il calcolo dei pianeti."
-                        )
-                    elif visible_planets.empty:
-                        st.info(
-                            "Nessun pianeta maggiore supera 10° con cielo "
-                            "sufficientemente scuro nella notte corrente."
-                        )
-                    else:
-                        st.dataframe(
-                            visible_planets,
-                            width="stretch",
-                            hide_index=True,
-                        )
-                    st.caption(
-                        "Stima per Mogliano: Sole sotto −6°, pianeta almeno "
-                        "10° sopra l’orizzonte; nuvole e ostacoli locali non inclusi."
-                    )
-
-        st.divider()
-        radar_col, info_col = st.columns([2, 1])
-
-        with radar_col:
-            st.write("### 🌧️ Radar precipitazioni Nord-Est")
-            try:
-                radar = get_latest_arpav_radar()
-                if radar is None:
-                    st.info("Immagine radar temporaneamente non disponibile.")
-                else:
-                    st.image(radar["image"], width="stretch")
-                    st.caption(
-                        "Mosaico aggiornato alle "
-                        f"{radar['observed_at'].strftime('%H:%M del %d/%m/%Y')} "
-                        "(ora locale). Intensità: verde debole, giallo moderata, "
-                        "rosso/viola forte."
-                    )
-            except requests.exceptions.RequestException:
-                st.info("Radar momentaneamente non raggiungibile.")
-            st.link_button("Apri il radar originale", ARPAV_RADAR_PAGE_URL)
-
-        with info_col:
-            if home_row is not None:
-                home_temp_row = latest_temps[
-                    latest_temps["station_id"] == home_row["station_id"]
-                ]
-                if not home_temp_row.empty:
-                    st.metric(
-                        f"🌡️ {home_row['station_name']}",
-                        f"{home_temp_row['value_numeric'].iloc[0]:.1f} °C",
-                    )
-                    st.caption(
-                        "Rilevata alle "
-                        + home_temp_row["observation_at"]
-                        .iloc[0]
-                        .strftime("%H:%M del %d/%m/%Y")
-                    )
-                else:
-                    st.info(
-                        "Nessuna temperatura recente per la stazione di casa"
-                    )
-            else:
-                st.info(
-                    "Nessuna stazione 'Mogliano Veneto' trovata: aggiungila "
-                    "in Gestione Stazioni per vedere qui i dati di casa"
-                )
-
-            st.dataframe(
-                overview_points[["label", "temp_text"]].rename(
-                    columns={
-                        "label": "Zona",
-                        "temp_text": "Temperatura",
-                    }
-                ),
-                width="stretch",
-                hide_index=True,
-            )
-
-        render_forecast_bulletin()
+                for _, row in veneto_temps.iterrows()
+            ]
+        )
 
 
-# TAB 5: Daily weather diary
-with tab5:
-    st.subheader("🕰️ Che tempo fece")
-    st.caption(
-        "Il racconto del giorno, le osservazioni di Mogliano e l’evoluzione "
-        "oraria della nuvolosità."
+# TAB: Previsioni
+with tab_forecast:
+    render_radar_nowcast()
+    st.divider()
+    m42_section(
+        "Previsioni Veneto",
+        eyebrow="Bollettino ARPAV",
+        subtitle=(
+            "Il bollettino Meteo Veneto, giorno per giorno, con le mappe "
+            "ufficiali."
+        ),
+    )
+    render_forecast_bulletin()
+
+
+# TAB: Cielo
+with tab_sky:
+    if home_row is None:
+        st.info(
+            "Serve una stazione di casa con le coordinate per calcolare "
+            "effemeridi e percorsi nel cielo."
+        )
+    else:
+        sky_date = st.date_input(
+            "Giorno",
+            value=local_today,
+            format="DD/MM/YYYY",
+            key="sky_date",
+        )
+        render_sky_section(
+            home_row["latitudine"], home_row["longitudine"], sky_date
+        )
+
+
+# TAB: Che tempo fece
+with tab_diary:
+    m42_section(
+        "Che tempo fece",
+        eyebrow="Diario",
+        subtitle=(
+            "Il racconto del giorno, le osservazioni di Mogliano e "
+            "l’evoluzione oraria della nuvolosità."
+        ),
     )
 
     diary_dates = get_weather_diary_dates()
@@ -2889,42 +3335,36 @@ with tab5:
             "Lo storico comincerà con il prossimo aggiornamento dello scraper."
         )
     else:
-        selected_diary_date = st.selectbox(
+        # Calendario e non elenco a tendina: l'archivio cresce di un giorno al
+        # giorno, e in una tendina lunga un anno cercare «il 3 marzo» vuol dire
+        # scorrere. Gli estremi sono quelli davvero in archivio, ma dentro
+        # l'intervallo si può cadere su un giorno vuoto — i buchi si dicono,
+        # non si nascondono.
+        selected_diary_date = st.date_input(
             "Giorno",
-            diary_dates,
-            format_func=lambda value: value.strftime("%A %d/%m/%Y").capitalize(),
+            value=diary_dates[0],
+            min_value=diary_dates[-1],
+            max_value=diary_dates[0],
+            format="DD/MM/YYYY",
             key="weather_diary_date",
         )
+        st.caption(italian_date_label(selected_diary_date))
+        if selected_diary_date not in set(diary_dates):
+            st.info(
+                "Per questo giorno non c'è niente in archivio: né bollettino "
+                "né analisi delle nubi."
+            )
+
         daily_bulletin = get_daily_weather_bulletin(selected_diary_date)
         if daily_bulletin:
             issued_at = datetime.fromisoformat(daily_bulletin["issued_at"])
             st.markdown(
                 '<div class="weather-diary-story">'
-                '<span class="weather-diary-eyebrow">Il racconto del giorno</span>'
+                '<span class="m42-eyebrow">Il racconto del giorno</span>'
                 f'<h3>{html.escape(daily_bulletin["title"])}</h3>'
                 f'<p>{html.escape(daily_bulletin["general_evolution"])}</p>'
                 f'<small>Aggiornato alle {issued_at.strftime("%H:%M")}</small>'
-                '</div>'
-                """
-                <style>
-                .weather-diary-story {
-                    margin: 0.4rem 0 1rem;
-                    padding: 1.15rem 1.25rem;
-                    border-radius: 18px;
-                    background: linear-gradient(135deg,
-                        color-mix(in srgb, var(--primary-color) 12%, transparent),
-                        color-mix(in srgb, var(--background-color) 96%, var(--text-color)));
-                    border: 1px solid color-mix(in srgb, var(--text-color) 12%, transparent);
-                }
-                .weather-diary-story h3 { margin: 0.2rem 0 0.65rem; }
-                .weather-diary-story p { margin: 0; line-height: 1.58; }
-                .weather-diary-story small { display: block; margin-top: 0.75rem; opacity: 0.65; }
-                .weather-diary-eyebrow {
-                    color: var(--primary-color); font-size: 0.76rem;
-                    font-weight: 750; letter-spacing: 0.055em; text-transform: uppercase;
-                }
-                </style>
-                """,
+                "</div>",
                 unsafe_allow_html=True,
             )
         else:
@@ -2958,32 +3398,49 @@ with tab5:
                     (day_observations["variable_type"] == "UMID2M")
                     & day_observations["value_numeric"].notna()
                 ]
-                metric_columns = st.columns(4)
-                metric_columns[0].metric(
-                    "Temperatura",
-                    (
-                        f"{temperature['value_numeric'].min():.1f} / "
-                        f"{temperature['value_numeric'].max():.1f} °C"
-                        if not temperature.empty else "—"
-                    ),
-                    help="Minima e massima della giornata civile italiana.",
-                )
-                metric_columns[1].metric(
-                    "Pioggia",
-                    f"{rain['value_numeric'].sum():.1f} mm" if not rain.empty else "—",
-                )
-                metric_columns[2].metric(
-                    "Vento massimo",
-                    f"{wind['value_numeric'].max():.1f} m/s" if not wind.empty else "—",
-                )
-                metric_columns[3].metric(
-                    "Umidità media",
-                    f"{humidity['value_numeric'].mean():.0f}%" if not humidity.empty else "—",
+                m42_render_tiles(
+                    [
+                        m42_tile(
+                            "🌡️ Temperatura",
+                            (
+                                f"{temperature['value_numeric'].min():.1f} / "
+                                f"{temperature['value_numeric'].max():.1f}°"
+                                if not temperature.empty
+                                else "—"
+                            ),
+                            "minima e massima della giornata civile",
+                        ),
+                        m42_tile(
+                            "🌧️ Pioggia",
+                            f"{rain['value_numeric'].sum():.1f} mm"
+                            if not rain.empty
+                            else "—",
+                        ),
+                        m42_tile(
+                            "🌬️ Vento massimo",
+                            f"{wind['value_numeric'].max():.1f} m/s"
+                            if not wind.empty
+                            else "—",
+                        ),
+                        m42_tile(
+                            "💧 Umidità media",
+                            f"{humidity['value_numeric'].mean():.0f}%"
+                            if not humidity.empty
+                            else "—",
+                        ),
+                    ]
                 )
 
         cloud_frames = get_cloud_type_frames(selected_diary_date)
         st.divider()
-        st.write("### ☁️ Nuvole durante la giornata")
+        m42_section(
+            "Nuvole durante la giornata",
+            eyebrow="Analisi oraria",
+            subtitle=(
+                "Un fotogramma per ogni ora, dalla tipologia delle nubi "
+                "ARPAV, in ora italiana."
+            ),
+        )
         if not cloud_frames:
             st.info("Nessuna analisi delle nubi archiviata per questo giorno.")
         else:
@@ -2999,7 +3456,7 @@ with tab5:
             frame_data = tuple(
                 (
                     frame["path"],
-                    frame["observed_at"].strftime("%A %d/%m/%Y · %H:%M").capitalize(),
+                    italian_date_label(frame["observed_at"], with_time=True),
                 )
                 for frame in cloud_frames
             )
@@ -3031,8 +3488,8 @@ with tab5:
                 )
 
 
-# TAB 1: Data View
-with tab1:
+# TAB: Dati
+with tab_data:
     st.subheader("Visualizza Osservazioni")
 
     col1, col2, col3 = st.columns(3)
@@ -3118,8 +3575,8 @@ with tab1:
         st.warning("Nessun dato disponibile")
 
 
-# TAB 2: Station Management
-with tab2:
+# TAB: Stazioni
+with tab_stations:
     st.subheader("Gestione Stazioni")
 
     config = load_stations_config()
@@ -3201,8 +3658,8 @@ with tab2:
         st.success("Configurazione salvata!")
 
 
-# TAB 3: Charts
-with tab3:
+# TAB: Grafici
+with tab_charts:
     st.subheader("Grafici")
 
     col1, col2 = st.columns([1, 2])
@@ -3453,8 +3910,8 @@ with tab3:
         st.info("Seleziona almeno una stazione")
 
 
-# TAB 4: Yearly / long-range history
-with tab4:
+# TAB: Storico annuale
+with tab_history:
     st.subheader("Storico Annuale")
     st.caption(
         "Medie e bande di oscillazione settimanali/mensili, e precipitazioni "

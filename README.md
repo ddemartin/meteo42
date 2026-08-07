@@ -141,7 +141,34 @@ Indice delle analisi orarie della tipologia delle nubi:
 
 ## Dashboard
 
-La dashboard Streamlit offre 3 tab:
+Otto tab, una per argomento, nell'ordine in cui si usano. Il *perché* di questa
+divisione — e del fatto che il radar stia con le previsioni e non con le
+osservazioni — sta in [MEMORANDUM.md](MEMORANDUM.md) (2026-08-07).
+
+**📍 Adesso**
+- Condizioni correnti della stazione di casa: temperatura, percepito, umidità,
+  vento, pioggia del giorno
+- Report testuale della settimana, con riassunto AI opzionale (Ollama locale)
+- Grafici delle ultime 72 ore: temperatura, umidità, bulbo umido, indice di calore
+- Temperature dei sette capoluoghi veneti
+
+**🔭 Previsioni**
+- Mosaico radar ARPAV del Nord-Est, aggiornato ogni 5 minuti
+- Bollettino Meteo Veneto giorno per giorno, con le mappe ufficiali
+
+**🌌 Cielo**
+- Sole: alba, culmine con altezza massima, tramonto, ore di luce e differenza
+  rispetto a ieri
+- Luna: fase, illuminazione, sorgere e tramontare
+- Percorsi di Sole, Luna e pianeti sull'orizzonte nell'arco della giornata
+- Pianeti visibili a occhio nudo nella notte corrente
+- Il giorno è scegliibile: le effemeridi si calcolano per qualsiasi data
+
+**🕰️ Che tempo fece**
+- Diario giornaliero: bollettino archiviato, osservazioni di Mogliano,
+  animazione oraria della tipologia delle nubi
+- Il giorno si sceglie da calendario, limitato agli estremi realmente in
+  archivio; sui giorni vuoti dentro l'intervallo lo dice
 
 **📊 Dati**
 - Visualizza osservazioni con filtri per stazione, variabile e periodo
@@ -150,16 +177,28 @@ La dashboard Streamlit offre 3 tab:
   copia `arpav_meteo.sqlite`, che è già un file solo. Vedi
   [MEMORANDUM.md](MEMORANDUM.md) (2026-08-07)
 
-**⚙️ Stazioni**
-- Gestisci `stations.json`
-- Aggiungi/modifica/elimina stazioni
-- Abilita/disabilita download
-
 **📈 Grafici**
 - Trend temporali per variabile
 - Confronta più stazioni
 - Grafici giornalieri e mensili con minimo, media e massimo
 - Visualizzazione interattiva con Plotly
+
+**📅 Storico Annuale**
+- Confronto pluriennale, precipitazioni cumulate per anno
+
+**⚙️ Stazioni**
+- Gestisci `stations.json`
+- Aggiungi/modifica/elimina stazioni
+- Abilita/disabilita download
+
+### Aspetto
+
+Le schede disegnate a mano condividono un foglio di stile unico
+(`M42_STYLESHEET` in `dashboard.py`). I colori **non** usano le variabili di
+tema di Streamlit, che dalla 1.60 non esistono più: grigio neutro a bassa
+opacità e `currentColor`, che rendono uguale su tema chiaro e scuro. Le griglie
+sono CSS `auto-fit` e non `st.columns`, che a 390 px non manda a capo. Il
+motivo esteso è in [MEMORANDUM.md](MEMORANDUM.md) (2026-08-07).
 
 ## API Endpoints
 
