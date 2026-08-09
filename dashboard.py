@@ -19,6 +19,7 @@ import plotly.express as px
 import requests
 from PIL import Image, ImageDraw
 from astral import LocationInfo, Observer, moon
+from astral.moon import riseset
 from astral.sun import elevation as sun_elevation, sun
 
 try:
@@ -2174,18 +2175,30 @@ def get_moon_details(lat: float, lon: float, target_date) -> dict:
     phase_day = moon.phase(target_date)
     illumination = (1 - math.cos(2 * math.pi * phase_day / 28)) / 2 * 100
 
-    def safe_event(event_func):
-        try:
-            return event_func(observer, date=target_date, tzinfo=tzinfo)
-        except (ValueError, moon.NoTransit):
-            return None
+    def local_event(index: int):
+        """Sorgere (0) o tramontare (1) della luna nel giorno *locale*.
+
+        `moon.moonrise` e `moon.moonset` ragionano a giorni UTC: a est di
+        Greenwich un sorgere subito dopo la mezzanotte locale cade nella
+        finestra del giorno UTC precedente, e la funzione solleva `ValueError`
+        ("Moon never rises on this date") pur essendoci l'evento. Si guardano
+        quindi le finestre vicine e si tiene quella la cui data locale è
+        davvero quella richiesta.
+        """
+        for offset in (0, -1, 1):
+            event = riseset(target_date + timedelta(days=offset), observer)[index]
+            if event is not None:
+                local = event.astimezone(tzinfo)
+                if local.date() == target_date:
+                    return local
+        return None
 
     return {
         "phase": get_moon_phase_label(target_date),
         "phase_day": phase_day,
         "illumination": illumination,
-        "moonrise": safe_event(moon.moonrise),
-        "moonset": safe_event(moon.moonset),
+        "moonrise": local_event(0),
+        "moonset": local_event(1),
     }
 
 

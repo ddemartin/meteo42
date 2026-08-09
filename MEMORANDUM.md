@@ -15,6 +15,43 @@ portava già il suo motivo, la voce lo dice.
 
 ---
 
+## 2026-08-09 — sorgere e tramontare della luna calcolati sul giorno locale
+
+La sezione cielo è andata in `TypeError` sul sorgere della luna del 9 agosto.
+Due difetti sovrapposti, e il primo nascondeva il secondo.
+
+`astral.moon.NoTransit` **non è un'eccezione**: è una `dataclass` che
+`riseset()` usa internamente per dire «in quest'ora la luna non attraversa
+l'orizzonte». Scriverla in `except (ValueError, moon.NoTransit)` compila, ma il
+giorno in cui il ramo serve davvero Python rifiuta la tupla — *catching classes
+that do not inherit from BaseException is not allowed* — e l'errore che si
+vede non è quello vero. Un `except` scritto per un caso raro va provocato
+almeno una volta, altrimenti è codice mai eseguito che aspetta il suo giorno.
+
+Il caso raro, però, non era affatto quello previsto. `moon.moonrise` ragiona a
+**giorni UTC**: a est di Greenwich un sorgere subito dopo la mezzanotte locale
+cade nella finestra del giorno UTC precedente, e la funzione solleva
+`ValueError("Moon never rises on this date")` mentre la luna sorge eccome — il
+9 agosto alle 01:41. Catturare e mostrare «—» avrebbe tolto il crash lasciando
+un dato **falso**, una volta al mese e sempre di notte, cioè quando la scheda
+serve. Si chiama quindi `riseset()` direttamente sulle tre finestre `-1, 0, +1`
+e si tiene l'evento la cui **data locale** è quella richiesta. Su 60 giorni
+provati restano quattro «—», e sono veri: capita davvero, circa una volta al
+mese per il sorgere e una per il tramontare, che l'evento salti un giorno di
+calendario perché slitta di ~50 minuti al giorno.
+
+**Prezzo:** `riseset` non è in `__all__` di `astral.moon`, è API interna e un
+aggiornamento del pacchetto può cambiarla. È un rischio accettato consapevolmente:
+l'API pubblica non espone il giorno locale, e la sola alternativa era calcolare
+le effemeridi della luna con `ephem` — che c'è già per i pianeti, ma è
+opzionale (vedi il `try/import` in testa a `dashboard.py`) e avrebbe reso la
+luna indisponibile proprio quando lo si scarta. Se `astral` romperà `riseset`,
+la strada è quella.
+
+**Alternativa scartata:** correggere solo l'`except` in `except ValueError`.
+Un carattere, nessun crash, e un dato sbagliato al mese che nessuno avrebbe più
+messo in dubbio.
+
 ## 2026-08-07 — launchd + venv, non Docker (⚠️ ricostruita a posteriori)
 
 **Voce ricostruita**, non registrata al momento della scelta: nasce dalla
