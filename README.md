@@ -59,6 +59,39 @@ In produzione sul Mac mini non si lancia a mano: gira come servizio launchd e si
 raggiunge da <https://meteo42.tail1a68b4.ts.net/> — dentro la tailnet, anche da
 fuori casa, senza nulla esposto su Internet.
 
+### 5. Rianalisi ERA5-Land (opzionale)
+
+Storico orario dal 1950 — temperatura, dew point e precipitazione — per la
+cella ERA5-Land più vicina a una stazione, in un database separato. Richiede un
+account CDS configurato in `~/.cdsapirc` e l'accettazione della licenza del
+dataset.
+
+```bash
+.venv/bin/python download_era5_land.py \
+  --from 1950-01-01 --to 2026-07-31 \
+  --lat 45.5807425 --lon 12.30779083 \
+  --database era5_land.sqlite
+```
+
+Le coordinate vengono arrotondate alla griglia di 0,1°. Il comando divide il
+periodo in blocchi di quattro mesi, verifica il numero di ore ricevute e salta
+i file già scaricati e validi: è riprendibile, basta rilanciarlo. La taglia dei
+blocchi non è arbitraria — il CDS rifiuta per costo una richiesta di sei mesi
+su tre variabili, anche per una singola cella.
+
+`--dry-run` mostra il piano senza interrogare il CDS, `--chunk-size month`
+forza file mensili, `--overwrite` sostituisce i download esistenti.
+
+Per validare e importare GRIB già scaricati, senza rete:
+
+```bash
+.venv/bin/python import_era5_land.py \
+  raw/era5-land --database era5_land.sqlite
+```
+
+L'import è idempotente: ogni file è identificato da percorso e checksum
+SHA-256, un file invariato viene saltato.
+
 ## Scheduling su macOS
 
 Vedi [SCHEDULER_SETUP.md](SCHEDULER_SETUP.md) per installare i due servizi
@@ -138,6 +171,20 @@ Indice delle analisi orarie della tipologia delle nubi:
 - `source_id`: identificativo dell'asset sorgente
 - `file_path`: immagine conservata in `cloud_type/`
 - `mime_type`, `size_bytes`: formato e dimensione del file
+
+### `era5_land.sqlite` — rianalisi, database separato
+
+Perché sia un file a parte sta in [MEMORANDUM.md](MEMORANDUM.md) (2026-08-10).
+
+- `grid_points`: una riga per coordinate di griglia
+- `weather_hourly`: una riga per punto e ora — Unix time UTC, temperatura, dew
+  point, umidità relativa derivata, accumulo grezzo di precipitazione e valore
+  orario ricavato per differenza; chiave `(grid_point_id, valid_at_utc)`,
+  tabella `WITHOUT ROWID`
+- `imports`: percorso, checksum SHA-256, intervallo e conteggi di ogni GRIB
+
+I timestamp sono in **UTC**, mentre le osservazioni ARPAV sono in ora solare
+fissa `UTC+1`: per confrontarle il timestamp ERA5 va traslato di `+1 ora`.
 
 ## Dashboard
 

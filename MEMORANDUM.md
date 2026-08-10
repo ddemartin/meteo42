@@ -15,6 +15,81 @@ portava già il suo motivo, la voce lo dice.
 
 ---
 
+## 2026-08-10 — ERA5-Land: 76 anni di rianalisi, in un database separato
+
+Le osservazioni ARPAV per Mogliano partono dal 2010. ERA5-Land, la rianalisi
+ECMWF, copre **dal 1950** su una griglia di `0,1°`: per la cella
+`45,6 N, 12,3 E` — il nodo più vicino alla stazione, a circa 2,2 km — sono
+671.303 ore di temperatura, dew point e precipitazione. È l'unico modo di
+avere un fondale climatico lungo sotto una serie osservata corta.
+
+**Database separato, `era5_land.sqlite`.** Provenienza, semantica e ciclo di
+aggiornamento non hanno niente in comune con le osservazioni: tenerle nello
+stesso file appesantirebbe backup, indici e scritture del DB operativo per
+dati che cambiano una volta l'anno. I confronti si fanno con `ATTACH DATABASE`
+o con un merge Pandas, che costano molto meno del contrario.
+
+**Un parser GRIB scritto a mano** (`era5_grib.py`), invece di `cfgrib`/eccodes.
+Il formato accettato è solo quello verificato nei download CDS correnti:
+GRIB 1 ECMWF, griglia lat/lon regolare, scan mode `0`, packing semplice. Tutto
+il resto solleva un errore. Il criterio è che un formato inatteso deve
+*fermare* l'import, non produrre dati silenziosamente sbagliati.
+**Prezzo:** se ECMWF cambia codifica il parser va aggiornato a mano.
+**Alternativa scartata:** eccodes, che è una dipendenza nativa da compilare e
+tenere allineata per leggere tre variabili su un punto solo.
+
+Tre cose sono costate tempo, e nessuna è deducibile dalla documentazione CDS.
+
+**Il CDS tariffa per numero di campi, e l'area non c'entra.** Una sola cella
+per un anno intero viene rifiutata con `cost limits exceeded`. Misurato:
+12 mesi (26.280 campi) rifiutato, 6 mesi (12.960) rifiutato, 4 mesi (8.640)
+accettato. Da qui `CHUNK_MONTHS = 4`, che sta sotto la soglia ed è un terzo
+esatto d'anno, quindi i blocchi cadono su confini di mese puliti. Il chunking
+annuale progettato quando la variabile era una sola non ha mai funzionato con
+tre: non era mai stato provato contro il CDS.
+
+**Il 1950-01-01 ha 23 ore, non 24.** ERA5-Land nasce da previsioni lanciate
+alle 00 UTC, quindi il valore valido a mezzanotte appartiene al run del giorno
+prima. Il primo giorno del dataset quel run non ce l'ha, e mancano **tutte e
+tre le variabili**, non solo la precipitazione. Senza questa correzione la
+prima richiesta dello storico fallisce la validazione sul conteggio dei
+messaggi — che è esattamente il comportamento voluto, ma per il motivo
+sbagliato.
+
+**L'intestazione GRIB della precipitazione mente.** Ogni messaggio dichiara
+`P1 = N-1`, `P2 = N`, indicatore temporale `4` — cioè un intervallo di un'ora
+— mentre i valori sono l'accumulo dall'inizio del run:
+
+```
+param  rif.(A M G H)  unità P1 P2 TRI
+  228  15-10-03 00h       1 23 24   4     <- valido 15-10-04 00:00
+  228  15-10-04 00h       1  0  1   4     <- reset
+  228  15-10-04 00h       1  1  2   4
+```
+
+Il reset si riconosce quindi da `P2 == 1`, non dall'indicatore temporale, e il
+valore orario si ottiene per differenza. Il DB conserva **entrambi**: accumulo
+grezzo e valore orario, così la differenza resta verificabile a posteriori e
+l'ora a cavallo di due file si ricostruisce leggendo l'accumulo precedente dal
+database. **Prezzo:** se ECMWF passasse a valori davvero orari l'intestazione
+resterebbe identica e il differenziamento produrrebbe spazzatura. L'unica
+difesa è il controllo sull'accumulo decrescente, che solleva un errore invece
+di correggere e scatterebbe alla prima ora asciutta dopo una piovosa.
+
+**Confronto con ARPAV.** ERA5-Land è in UTC, il DB ARPAV in ora solare fissa
+`UTC+1` tutto l'anno: per confrontare le serie il timestamp ERA5 va traslato di
+`+1 ora`. E `TARIA2M` è una media oraria, mentre ERA5 è il valore modellato
+all'istante di validità — differenza da ricordare leggendo gli scarti orari.
+Verificato su ottobre 2015, 744 coppie: bias `+0,46 °C`, MAE `0,98 °C`, RMSE
+`1,34 °C`, correlazione `0,950`, MAE sulle medie giornaliere `0,55 °C`. Il
+valore ERA5 rappresenta un'area di circa 11 × 8 km, non la misura puntuale
+della stazione: a questa scala quel bias è il livello di accordo che ci si
+può aspettare, non un difetto da correggere.
+
+**Nota per le stazioni costiere:** ERA5-Land maschera il mare, e il nodo
+geometricamente più vicino può non contenere valori. Va verificato prima di
+dare per scontato che una cella esista.
+
 ## 2026-08-09 — sorgere e tramontare della luna calcolati sul giorno locale
 
 La sezione cielo è andata in `TypeError` sul sorgere della luna del 9 agosto.
