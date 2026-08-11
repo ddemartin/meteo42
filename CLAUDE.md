@@ -35,6 +35,38 @@ curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8501
 tail -20 logs/dashboard_error.log
 ```
 
+## Modello esterno per la scheda Clima
+
+La scheda **Clima** usa il modello locale via Ollama. Per abilitare anche
+`gpt-5.6-luna` servono tre variabili, gli stessi nomi di brain42:
+
+```
+LLM_EXTERNAL_BASE_URL=https://…/v1
+LLM_EXTERNAL_MODEL=gpt-5.6-luna
+LLM_EXTERNAL_API_KEY=…
+```
+
+Il servizio launchd **non eredita l'ambiente della shell**: vanno messe nel
+plist `~/Library/LaunchAgents/com.meteo42.dashboard.plist` (che non sta nel
+repo, perché conterrebbe la chiave), dentro un blocco `EnvironmentVariables`
+accanto a `ProgramArguments`:
+
+```xml
+<key>EnvironmentVariables</key>
+<dict>
+	<key>LLM_EXTERNAL_BASE_URL</key><string>https://…/v1</string>
+	<key>LLM_EXTERNAL_MODEL</key><string>gpt-5.6-luna</string>
+	<key>LLM_EXTERNAL_API_KEY</key><string>…</string>
+</dict>
+```
+
+Dopo aver modificato il plist **non basta `kickstart`**, che rilegge la copia
+in cache: serve il ciclo `bootout` + `bootstrap` descritto più sotto.
+
+Senza queste variabili il selettore del modello non compare e la scheda usa
+solo Ollama: non è un guasto. Il modello esterno **non scatta mai da solo**
+quando il locale sbaglia — è a consumo e si sceglie a mano, come in brain42.
+
 ## Accesso da fuori rete
 
 **<https://meteo42.tail1a68b4.ts.net/>** — dentro la tailnet, niente esposto su

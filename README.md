@@ -188,7 +188,7 @@ fissa `UTC+1`: per confrontarle il timestamp ERA5 va traslato di `+1 ora`.
 
 ## Dashboard
 
-Otto tab, una per argomento, nell'ordine in cui si usano. Il *perché* di questa
+Nove tab, una per argomento, nell'ordine in cui si usano. Il *perché* di questa
 divisione — e del fatto che il radar stia con le previsioni e non con le
 osservazioni — sta in [MEMORANDUM.md](MEMORANDUM.md) (2026-08-07).
 
@@ -232,6 +232,43 @@ osservazioni — sta in [MEMORANDUM.md](MEMORANDUM.md) (2026-08-07).
 
 **📅 Storico Annuale**
 - Confronto pluriennale, precipitazioni cumulate per anno
+
+**🌡️ Clima**
+- Rianalisi ERA5-Land dal 1950 (`era5_land.sqlite`, database separato): il
+  fondale climatico lungo sotto una serie osservata corta
+- Temperatura media e precipitazione annua, ciclo annuale con la banda tra
+  l'anno più freddo e il più caldo, ciclo annuale per decennio
+- Solo gli anni con dodici mesi completi entrano in medie e confronti: durante
+  lo scaricamento — che dura giorni — l'ultimo anno è tronco, e una media
+  calcolata su mezzo anno sarebbe falsa senza sembrarlo. I mesi ancora
+  incompleti sono elencati sotto le tessere
+- **Interroga i dati**, in tre modi:
+  - *Chiedi in italiano* — il modello Ollama locale **sceglie** una delle
+    ricette pronte di `era5_queries.py` e ne riempie i parametri, che restano
+    correggibili prima di eseguire. Non scrive SQL: sceglie e compila
+  - *Scegli dalla libreria* — la stessa cosa senza modello, dal menù
+  - *SQL libero* — il modello propone una query nuova, oppure la si scrive a
+    mano. Serve per le domande che la libreria non copre. Se l'SQL contiene
+    parametri `:anno`, `:mese`, `:soglia`… compaiono i campi per riempirli, e
+    una query che funziona si **salva nel ricettario** con un titolo e una
+    domanda d'esempio: da lì in poi è nella libreria come le altre, e il
+    modello può sceglierla da sé. Le ricette salvate stanno in
+    `era5_ricette.json`, fuori dal versionamento, e si eliminano dal menù
+
+  In ogni caso la query è visibile prima di partire e si esegue solo su
+  conferma. Se sono configurate `LLM_EXTERNAL_BASE_URL` /
+  `LLM_EXTERNAL_MODEL` / `LLM_EXTERNAL_API_KEY`, nella sola modalità *SQL
+  libero* compare un selettore per usare `gpt-5.6-luna` al posto del modello
+  locale — scelta manuale, mai automatica (vedi [CLAUDE.md](CLAUDE.md)) La connessione è in
+  sola lettura (`mode=ro` + `PRAGMA query_only`), le query non-SELECT sono
+  rifiutate prima di partire e quelle troppo lunghe interrotte dopo 15
+  secondi. Il database delle osservazioni è allegato in sola lettura come
+  `arpav.`, quindi si possono incrociare le due sorgenti. Senza Ollama restano
+  la libreria e la casella SQL. Il perché di questa forma invece del
+  text-to-SQL diretto è in [MEMORANDUM.md](MEMORANDUM.md) (2026-08-11)
+- ⚠️ ERA5 è la media di una cella di ~11 × 8 km campionata ogni ora: gli
+  estremi sono più smorzati di quelli di un termometro, e i conteggi di giorni
+  oltre soglia non sono confrontabili con quelli di una stazione
 
 **⚙️ Stazioni**
 - Gestisci `stations.json`

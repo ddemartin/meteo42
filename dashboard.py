@@ -6,6 +6,7 @@ import json
 import base64
 import html
 import re
+import time
 import xml.etree.ElementTree as ET
 from io import BytesIO
 from pathlib import Path
@@ -1991,6 +1992,606 @@ def generate_narrative_report(
     return response.json()["response"].strip()
 
 
+# --- Rianalisi ERA5-Land ----------------------------------------------------
+#
+# Il fondale climatico lungo (dal 1950) sta in un file suo per scelta
+# (MEMORANDUM 2026-08-10): qui si apre in **sola lettura** e, quando serve
+# incrociarlo con le osservazioni, si allega il DB operativo con `ATTACH`
+# invece di fondere i due file.
+
+ERA5_DATABASE_PATH = Path(
+    os.environ.get("ERA5_DATABASE_PATH", "era5_land.sqlite")
+)
+
+# ERA5 registra in UTC, il resto della dashboard ragiona in ora solare fissa
+# UTC+1 (MEMORANDUM 2026-08-02). Mesi e anni si raggruppano sull'ora locale:
+# altrimenti gennaio comincerebbe alle 01:00 del primo giorno e ogni mese si
+# porterebbe dietro un'ora di quello prima.
+ERA5_LOCAL_OFFSET_SECONDS = 3600
+
+# Le ricette pronte e i nomi dei mesi stanno in un modulo a parte per poterle
+# eseguire tutte in un test senza tirarsi dietro Streamlit.
+from era5_queries import (  # noqa: E402
+    ITALIAN_MONTHS,
+    ITALIAN_MONTHS_SHORT,
+    catalogo_per_prompt,
+    elimina_ricetta_utente,
+    normalizza_parametri,
+    parametri_da_sql,
+    salva_ricetta_utente,
+    schema_scelta,
+    tutte_le_ricette,
+)
+
+# Il modello esterno per i compiti che il 9B locale non regge. Stessi nomi di
+# variabili di brain42, che parla lo stesso dialetto OpenAI-compatibile, così
+# la configurazione è una sola cosa da ricordare per entrambi i progetti.
+#
+# **Niente ricaduta automatica**, che è la regola scritta in brain42
+# (MEMORANDUM 2026-08-03) e vale identica qui: chi chiede l'esterno lo chiede
+# perché il locale non gli basta. Una dashboard che chiama da sola un'API a
+# consumo quando il modello di casa incespica è un conto che cresce senza che
+# nessuno l'abbia deciso.
+LLM_EXTERNAL_BASE_URL = os.environ.get("LLM_EXTERNAL_BASE_URL")
+LLM_EXTERNAL_MODEL = os.environ.get("LLM_EXTERNAL_MODEL", "gpt-5.6-luna")
+LLM_EXTERNAL_API_KEY = os.environ.get("LLM_EXTERNAL_API_KEY")
+
+
+def era5_esterno_configurato() -> bool:
+    return bool(LLM_EXTERNAL_BASE_URL and LLM_EXTERNAL_MODEL)
+
+
+def era5_connect_readonly(attach_observations: bool = False) -> sqlite3.Connection:
+    """Sola lettura sulla rianalisi, con le osservazioni allegate a richiesta.
+
+    Tre difese sovrapposte, perché da qui passa anche SQL scritto da un
+    modello: `mode=ro` nell'URI, `PRAGMA query_only` e l'allegato anch'esso in
+    `mode=ro`. Verificato che un `CREATE TABLE` sul database allegato fallisce
+    con "attempt to write a readonly database".
+    """
+    conn = sqlite3.connect(
+        f"file:{ERA5_DATABASE_PATH}?mode=ro", uri=True, check_same_thread=False
+    )
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only = ON")
+    if attach_observations and DATABASE_PATH.exists():
+        conn.execute(
+            "ATTACH DATABASE ? AS arpav", (f"file:{DATABASE_PATH}?mode=ro",)
+        )
+    return conn
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_era5_monthly() -> pd.DataFrame:
+    """Una riga per mese: media oraria, estremi, pioggia e ore effettive.
+
+    Le ore ERA5 durano tutte uguale, quindi la media semplice è già pesata
+    sulla durata come vuole il MEMORANDUM (2026-07-30) — a differenza delle
+    osservazioni, campionate a 10 minuti nel live e a un'ora nello storico.
+
+    `ore` serve a riconoscere i mesi ancora incompleti: lo scaricamento dei 76
+    anni dura giorni, e per tutto quel tempo l'ultimo mese è tronco. Un mese
+    tronco in una media annua la falserebbe in silenzio.
+    """
+    if not ERA5_DATABASE_PATH.exists():
+        return pd.DataFrame()
+    conn = era5_connect_readonly()
+    try:
+        frame = pd.read_sql_query(
+            """
+            SELECT
+                CAST(strftime('%Y', valid_at_utc + :offset, 'unixepoch') AS INTEGER)
+                    AS anno,
+                CAST(strftime('%m', valid_at_utc + :offset, 'unixepoch') AS INTEGER)
+                    AS mese,
+                AVG(temperature_c)          AS t_media,
+                MIN(temperature_c)          AS t_min,
+                MAX(temperature_c)          AS t_max,
+                AVG(relative_humidity_pct)  AS rh_media,
+                SUM(precipitation_mm)       AS prec_mm,
+                COUNT(*)                    AS ore
+            FROM weather_hourly
+            GROUP BY anno, mese
+            ORDER BY anno, mese
+            """,
+            conn,
+            params={"offset": ERA5_LOCAL_OFFSET_SECONDS},
+        )
+    finally:
+        conn.close()
+    if frame.empty:
+        return frame
+    frame["ore_attese"] = [
+        pd.Period(f"{anno}-{mese:02d}", freq="M").days_in_month * 24
+        for anno, mese in zip(frame["anno"], frame["mese"])
+    ]
+    # Tolleranza di due ore, e servono entrambe per il primo mese del dataset:
+    # una è quella che ERA5 non ha (a mezzanotte del 1950-01-01 manca la corsa
+    # che la produrrebbe, MEMORANDUM 2026-08-10), l'altra la porta via lo
+    # spostamento in ora locale, che fa cominciare il mese alle 02:00. Senza
+    # tolleranza il 1950 sparirebbe da medie e confronti per due ore su 8760.
+    # Non può nascondere un buco vero: il download valida ogni blocco sul
+    # numero di messaggi, quindi i mesi interni non hanno ore mancanti.
+    frame["completo"] = frame["ore"] >= frame["ore_attese"] - 2
+    return frame
+
+
+def era5_yearly_from_monthly(monthly: pd.DataFrame) -> pd.DataFrame:
+    """Aggregati annui sui soli anni con dodici mesi completi."""
+    if monthly.empty:
+        return pd.DataFrame()
+    complete = monthly[monthly["completo"]].copy()
+    if complete.empty:
+        return pd.DataFrame()
+    complete["_somma"] = complete["t_media"] * complete["ore"]
+    yearly = complete.groupby("anno", as_index=False).agg(
+        _somma=("_somma", "sum"),
+        ore=("ore", "sum"),
+        prec_mm=("prec_mm", "sum"),
+        t_min=("t_min", "min"),
+        t_max=("t_max", "max"),
+        mesi=("mese", "count"),
+    )
+    yearly["t_media"] = yearly["_somma"] / yearly["ore"]
+    return yearly[yearly["mesi"] == 12].drop(columns=["_somma", "mesi"])
+
+
+def build_era5_annual_temperature_figure(yearly: pd.DataFrame) -> go.Figure:
+    media = (yearly["t_media"] * yearly["ore"]).sum() / yearly["ore"].sum()
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=yearly["anno"],
+            y=yearly["t_media"],
+            mode="lines+markers",
+            name="Media annua",
+            line=dict(color="#EF4444", width=2),
+            hovertemplate="%{x} · %{y:.2f} °C<extra></extra>",
+        )
+    )
+    fig.add_hline(
+        y=media,
+        line_dash="dash",
+        line_color="#94A3B8",
+        annotation_text=f"media del periodo · {media:.2f} °C",
+        annotation_position="top left",
+    )
+    fig.update_layout(
+        title="Temperatura media annua",
+        xaxis_title="Anno",
+        yaxis_title="°C",
+        height=400,
+        hovermode="x unified",
+        legend=MOBILE_LEGEND,
+        margin=MOBILE_CHART_MARGIN,
+    )
+    return fig
+
+
+def build_era5_annual_precipitation_figure(yearly: pd.DataFrame) -> go.Figure:
+    media = yearly["prec_mm"].mean()
+    fig = go.Figure(
+        go.Bar(
+            x=yearly["anno"],
+            y=yearly["prec_mm"],
+            marker_color="#0EA5E9",
+            name="Totale annuo",
+            hovertemplate="%{x} · %{y:.0f} mm<extra></extra>",
+        )
+    )
+    fig.add_hline(
+        y=media,
+        line_dash="dash",
+        line_color="#94A3B8",
+        annotation_text=f"media del periodo · {media:.0f} mm",
+        annotation_position="top left",
+    )
+    fig.update_layout(
+        title="Precipitazione annua",
+        xaxis_title="Anno",
+        yaxis_title="mm",
+        height=400,
+        legend=MOBILE_LEGEND,
+        margin=MOBILE_CHART_MARGIN,
+    )
+    return fig
+
+
+def build_era5_monthly_climatology_figure(monthly: pd.DataFrame) -> go.Figure:
+    """Ciclo annuale medio, con la banda tra l'anno più freddo e il più caldo.
+
+    La banda è la dispersione delle **medie mensili tra gli anni**, non gli
+    estremi orari: dice quanto può spostarsi un gennaio da un anno all'altro,
+    che è la domanda climatica. Gli estremi assoluti stanno nelle tessere.
+    """
+    complete = monthly[monthly["completo"]]
+    stats = complete.groupby("mese", as_index=False).agg(
+        media=("t_media", "mean"),
+        minimo=("t_media", "min"),
+        massimo=("t_media", "max"),
+    )
+    labels = [ITALIAN_MONTHS_SHORT[mese - 1] for mese in stats["mese"]]
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=labels,
+            y=stats["massimo"],
+            mode="lines",
+            line=dict(width=0),
+            showlegend=False,
+            hoverinfo="skip",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=labels,
+            y=stats["minimo"],
+            mode="lines",
+            line=dict(width=0),
+            fill="tonexty",
+            fillcolor=hex_to_rgba("#EF4444", 0.15),
+            name="Tra l'anno più freddo e il più caldo",
+            hoverinfo="skip",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=labels,
+            y=stats["media"],
+            mode="lines+markers",
+            line=dict(color="#EF4444", width=2),
+            name="Media del mese",
+            hovertemplate="%{x} · %{y:.2f} °C<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title="Ciclo annuale della temperatura",
+        xaxis_title="Mese",
+        yaxis_title="°C",
+        height=400,
+        hovermode="x unified",
+        legend=MOBILE_LEGEND,
+        margin=MOBILE_CHART_MARGIN,
+    )
+    return fig
+
+
+def build_era5_decade_profile_figure(monthly: pd.DataFrame) -> go.Figure:
+    """Un ciclo annuale per decennio: è qui che si vede se il clima si sposta."""
+    complete = monthly[monthly["completo"]].copy()
+    complete["decennio"] = (complete["anno"] // 10) * 10
+    complete["_somma"] = complete["t_media"] * complete["ore"]
+    grouped = complete.groupby(["decennio", "mese"], as_index=False)[
+        ["_somma", "ore"]
+    ].sum()
+    grouped["t_media"] = grouped["_somma"] / grouped["ore"]
+
+    fig = go.Figure()
+    for decennio in sorted(grouped["decennio"].unique()):
+        block = grouped[grouped["decennio"] == decennio]
+        fig.add_trace(
+            go.Scatter(
+                x=[ITALIAN_MONTHS_SHORT[mese - 1] for mese in block["mese"]],
+                y=block["t_media"],
+                mode="lines+markers",
+                name=f"{decennio}-{str(decennio + 9)[-2:]}",
+                line=dict(color=year_qualitative_color(int(decennio)), width=2),
+                hovertemplate="%{x} · %{y:.2f} °C<extra></extra>",
+            )
+        )
+    fig.update_layout(
+        title="Ciclo annuale per decennio",
+        xaxis_title="Mese",
+        yaxis_title="°C",
+        height=400,
+        hovermode="x unified",
+        legend=MOBILE_LEGEND,
+        margin=MOBILE_CHART_MARGIN,
+    )
+    return fig
+
+
+# --- Interrogazione del database in linguaggio naturale ---------------------
+#
+# Il modello **propone** l'SQL, non lo esegue: la dashboard lo mostra, lo
+# lascia correggere e lo esegue solo su conferma esplicita. È il compromesso
+# scelto contro il text-to-SQL diretto, dove una query sbagliata restituisce
+# un numero plausibile e falso — esattamente ciò che il MEMORANDUM
+# (2026-07-31) vuole impedire al riassunto AI.
+
+ERA5_SQL_SCHEMA = """\
+Database principale (rianalisi ERA5-Land, una sola cella di griglia):
+  weather_hourly(grid_point_id, valid_at_utc, temperature_c, dewpoint_c,
+                 relative_humidity_pct, precipitation_accumulated_mm,
+                 precipitation_mm)
+    - una riga per ora; valid_at_utc e' Unix time in UTC
+    - precipitation_mm e' la pioggia della singola ora, ed e' quella da sommare
+    - precipitation_accumulated_mm e' l'accumulo grezzo dall'inizio della corsa
+      di previsione: NON va sommato
+    - la pioggia di un anno e' la SOMMA di precipitation_mm su quell'anno; la
+      "media annua di pioggia" e' la media di quelle somme tra gli anni, mai
+      la media delle singole ore, che darebbe frazioni di millimetro
+  grid_points(grid_point_id, latitude, longitude)
+  imports(source_path, sha256, first_valid_at_utc, last_valid_at_utc,
+          message_count, value_count)
+
+Database allegato con le osservazioni ARPAV, sempre col prefisso "arpav.":
+  arpav.observations(station_id, observation_at, variable_type, station_name,
+                     value_numeric, unit)
+    - observation_at e' testo ISO in ora solare fissa UTC+1, tutto l'anno
+    - variable_type: TARIA2M temperatura, PREC pioggia, UMID umidita'
+  arpav.stations(station_id, configured_name, api_name, enabled)
+
+Attenzione: lo scaricamento dello storico e' in corso, quindi l'ultimo anno
+puo' essere parziale. Una media annua calcolata su un anno parziale e' falsa
+(mancano i mesi freddi o caldi che non sono ancora stati scaricati): per medie,
+massimi e minimi annui filtra sempre agli anni completi elencati qui sotto.
+
+Per raggruppare le ore ERA5 per giorno/mese/anno locale:
+  strftime('%Y', valid_at_utc + 3600, 'unixepoch')
+Per confrontare le due sorgenti il timestamp ERA5 va portato in ora locale
+nello stesso modo. ERA5 parte dal 1950, le osservazioni ARPAV dal 2010: prima
+del 2010 il confronto non e' possibile.
+
+Esempi di query corrette (gli anni vanno sostituiti con quelli effettivamente
+disponibili, indicati piu' sotto):
+
+D: Qual e' stato l'anno piu' caldo?
+Q: SELECT strftime('%Y', valid_at_utc + 3600, 'unixepoch') AS anno,
+          AVG(temperature_c) AS media
+   FROM weather_hourly
+   WHERE strftime('%Y', valid_at_utc + 3600, 'unixepoch') BETWEEN '1950' AND '1960'
+   GROUP BY anno ORDER BY media DESC LIMIT 1
+
+D: Quanta pioggia cade in media ogni anno?
+Q: WITH per_anno AS (
+     SELECT strftime('%Y', valid_at_utc + 3600, 'unixepoch') AS anno,
+            SUM(precipitation_mm) AS mm
+     FROM weather_hourly
+     WHERE strftime('%Y', valid_at_utc + 3600, 'unixepoch') BETWEEN '1950' AND '1960'
+     GROUP BY anno)
+   SELECT AVG(mm) AS media_mm_anno FROM per_anno
+
+D: Com'e' il ciclo annuale della temperatura?
+Q: SELECT CAST(strftime('%m', valid_at_utc + 3600, 'unixepoch') AS INTEGER) AS mese,
+          AVG(temperature_c) AS media
+   FROM weather_hourly GROUP BY mese ORDER BY mese
+
+Un'aggregazione di aggregazioni si scrive sempre con WITH, come nel secondo
+esempio: SQLite rifiuta AVG(SUM(...)).
+"""
+
+# `mode=ro` e `query_only` bloccano già le scritture; questo elenco serve a
+# rifiutare la query *prima* di eseguirla, con un motivo leggibile, invece di
+# lasciare che fallisca a metà con un errore di SQLite.
+ERA5_SQL_FORBIDDEN = re.compile(
+    r"\b(attach|detach|pragma|insert|update|delete|drop|create|alter|"
+    r"replace|vacuum|reindex|trigger)\b",
+    re.IGNORECASE,
+)
+
+
+def era5_strip_sql_fences(text: str) -> str:
+    """Toglie i recinti markdown che il modello aggiunge nonostante le istruzioni."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    return cleaned.strip()
+
+
+def era5_validate_sql(sql: str) -> str | None:
+    """Il motivo del rifiuto, oppure None se la query è accettabile."""
+    stripped = sql.strip().rstrip(";").strip()
+    if not stripped:
+        return "la query è vuota"
+    if ";" in stripped:
+        return "la query contiene più istruzioni separate da punto e virgola"
+    if not re.match(r"^(select|with)\b", stripped, re.IGNORECASE):
+        return "la query non inizia con SELECT o WITH"
+    forbidden = ERA5_SQL_FORBIDDEN.search(stripped)
+    if forbidden:
+        return f"parola chiave non ammessa: {forbidden.group(0).upper()}"
+    return None
+
+
+def era5_propose_sql(
+    question: str, coverage_hint: str, esterno: bool = False
+) -> str:
+    istruzioni = (
+        "Traduci la domanda in una query SQLite di sola lettura. Rispondi con "
+        "una sola istruzione SELECT (eventualmente preceduta da WITH), senza "
+        "punto e virgola, senza commenti e senza blocchi markdown: soltanto "
+        "l'SQL. Non inventare tabelle o colonne che non siano nello schema. "
+        "Se la domanda può restituire molte righe, aggiungi un LIMIT."
+    )
+    contesto = (
+        f"Schema:\n{ERA5_SQL_SCHEMA}\n"
+        f"Dati attualmente disponibili: {coverage_hint}\n\n"
+        f"Domanda: {question}"
+    )
+    if esterno:
+        return era5_strip_sql_fences(
+            era5_chiama_esterno(istruzioni, contesto)
+        )
+
+    prompt = f"{istruzioni}\n\n{contesto}\nSQL:"
+    response = requests.post(
+        f"{OLLAMA_BASE_URL}/api/generate",
+        json={
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "think": False,
+            # Bassa come per il riassunto: qui non si vuole varietà, si vuole
+            # la stessa query per la stessa domanda.
+            "options": {"temperature": 0.1},
+        },
+        timeout=90,
+    )
+    response.raise_for_status()
+    return era5_strip_sql_fences(response.json()["response"])
+
+
+def era5_run_query(
+    sql: str,
+    params: dict | None = None,
+    timeout_seconds: float = 15.0,
+    max_rows: int = 2000,
+) -> tuple[pd.DataFrame, bool]:
+    """Esegue la query e dice se il risultato è stato troncato.
+
+    Il tetto alle righe si applica leggendo il cursore, non riscrivendo l'SQL:
+    aggiungere un LIMIT a una query altrui ne cambierebbe il senso senza dirlo.
+    """
+    conn = era5_connect_readonly(attach_observations=True)
+    deadline = time.monotonic() + timeout_seconds
+    # Una scansione delle 671.000 ore senza indice bloccherebbe la pagina a
+    # tempo indeterminato: il progress handler interrompe la query invece di
+    # lasciare girare la clessidra.
+    conn.set_progress_handler(
+        lambda: 1 if time.monotonic() > deadline else 0, 20000
+    )
+    try:
+        cursor = conn.execute(sql, params or {})
+        columns = [column[0] for column in cursor.description or []]
+        rows = cursor.fetchmany(max_rows + 1)
+        truncated = len(rows) > max_rows
+        frame = pd.DataFrame(
+            [tuple(row) for row in rows[:max_rows]], columns=columns
+        )
+        return frame, truncated
+    finally:
+        conn.set_progress_handler(None, 0)
+        conn.close()
+
+
+def era5_chiama_esterno(
+    sistema: str,
+    utente: str,
+    schema: dict | None = None,
+    temperatura: float = 0.1,
+) -> str:
+    """Una richiesta al modello esterno, dialetto OpenAI-compatibile.
+
+    `reasoning_effort: "none"` perché questi sono lavori meccanici — scegliere
+    da un elenco, riscrivere numeri in una frase — e i livelli più alti si
+    alzano quando un compito sbaglia per aver pensato troppo poco, non per
+    sicurezza: alzarli senza una misura vuol dire pagare di più per un
+    miglioramento mai osservato (brain42, MEMORANDUM 2026-08-03).
+    """
+    payload = {
+        "model": LLM_EXTERNAL_MODEL,
+        "temperature": temperatura,
+        "reasoning_effort": "none",
+        "messages": [
+            {"role": "system", "content": sistema},
+            {"role": "user", "content": utente},
+        ],
+    }
+    if schema is not None:
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "scelta",
+                "strict": True,
+                "schema": schema,
+            },
+        }
+    headers = {}
+    if LLM_EXTERNAL_API_KEY:
+        headers["Authorization"] = f"Bearer {LLM_EXTERNAL_API_KEY}"
+    response = requests.post(
+        f"{LLM_EXTERNAL_BASE_URL.rstrip('/')}/chat/completions",
+        json=payload,
+        headers=headers,
+        timeout=90,
+    )
+    response.raise_for_status()
+    dati = response.json()
+    try:
+        return dati["choices"][0]["message"]["content"]
+    except (KeyError, IndexError) as errore:
+        raise ValueError(f"risposta inattesa dal modello: {dati!r}") from errore
+
+
+def era5_chiave_parametro(ricetta: dict, parametro: dict) -> str:
+    """Chiave del widget, distinta per ricetta.
+
+    Senza l'identificativo della ricetta nella chiave, `soglia` si trascina da
+    una ricetta all'altra: passando da «giorni con massima ≥ 30 °C» a «periodo
+    asciutto più lungo» la soglia restava 30, ma lì si misura in millimetri, e
+    il risultato era un periodo di siccità di 161 giorni in mezzo alla
+    pioggia. Sbagliato e silenzioso, perché nessuno dei due numeri è assurdo.
+    """
+    return f"era5_par_{ricetta['id']}_{parametro['nome']}"
+
+
+def era5_scegli_ricetta(
+    domanda: str, copertura: str, ricette: list[dict], esterno: bool = False
+) -> dict:
+    """Fa scegliere al modello una ricetta della libreria e i suoi parametri.
+
+    Scegliere fra venti opzioni e compilare due campi numerici è un compito di
+    tutt'altra difficoltà rispetto a scrivere SQL: il 9B sbagliava
+    sistematicamente la generazione libera (funzioni finestra nel WHERE,
+    `AVG(SUM(...))`), mentre qui l'unico errore possibile è scegliere la
+    ricetta sbagliata — e si vede, perché il titolo è scritto a schermo.
+    """
+    istruzioni = (
+        "Scegli dalla libreria la ricetta che risponde alla domanda e riempi "
+        "i suoi parametri. Rispondi **solo** con un oggetto JSON della forma "
+        '{"id": "identificativo", "parametri": {"nome": valore}}, senza '
+        "spiegazioni e senza blocchi markdown. I valori dei parametri sono "
+        "numeri: i mesi come numero da 1 a 12. Lascia a null i parametri che "
+        "la ricetta scelta non usa. Se nessuna ricetta risponde alla domanda, "
+        'rispondi con "id": null.'
+    )
+    contesto = (
+        f"Libreria:\n{catalogo_per_prompt(ricette)}\n\n"
+        f"Dati disponibili: {copertura}\n\n"
+        f"Domanda: {domanda}"
+    )
+    if esterno:
+        # Sull'esterno lo schema vincola il decoding: l'identificativo esce da
+        # un enum, quindi una ricetta inesistente non è proprio rappresentabile.
+        testo = era5_chiama_esterno(istruzioni, contesto, schema=schema_scelta(ricette))
+        try:
+            scelta = json.loads(testo)
+        except json.JSONDecodeError as errore:
+            raise ValueError(f"JSON non valido: {errore}") from None
+        if not isinstance(scelta, dict):
+            raise ValueError("la risposta non è un oggetto JSON")
+        return scelta
+
+    prompt = f"{istruzioni}\n\n{contesto}\nJSON:"
+    response = requests.post(
+        f"{OLLAMA_BASE_URL}/api/generate",
+        json={
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "think": False,
+            "options": {"temperature": 0.1},
+        },
+        timeout=90,
+    )
+    response.raise_for_status()
+    testo = era5_strip_sql_fences(response.json()["response"])
+    # Il modello aggiunge volentieri una frase prima o dopo il JSON nonostante
+    # le istruzioni: si prende il primo oggetto graffato invece di arrendersi.
+    match = re.search(r"\{.*\}", testo, re.DOTALL)
+    if not match:
+        raise ValueError("nessun JSON nella risposta")
+    try:
+        scelta = json.loads(match.group(0))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"JSON non valido: {error}") from None
+    if not isinstance(scelta, dict):
+        raise ValueError("la risposta non è un oggetto JSON")
+    return scelta
+
+
 def compute_sun_times(lat: float, lon: float, target_date) -> dict:
     """Sunrise, solar noon (culmine) and sunset for a location, plus day/night length."""
     location = LocationInfo(latitude=lat, longitude=lon)
@@ -3150,6 +3751,7 @@ def render_overview_72h_charts(station_id: str) -> None:
     tab_data,
     tab_charts,
     tab_history,
+    tab_climate,
     tab_stations,
 ) = st.tabs(
     [
@@ -3160,6 +3762,7 @@ def render_overview_72h_charts(station_id: str) -> None:
         "📊 Dati",
         "📈 Grafici",
         "📅 Storico Annuale",
+        "🌡️ Clima",
         "⚙️ Stazioni",
     ]
 )
@@ -4098,3 +4701,543 @@ with tab_history:
                     render_chart(
                         build_yearly_precipitation_comparison(prec_history_df),
                     )
+
+
+# TAB: Clima
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_first_observation_year() -> int | None:
+    """Primo anno con osservazioni ARPAV, per sapere da quando il confronto esiste."""
+    conn = get_db_connection()
+    try:
+        row = conn.execute(
+            "SELECT MIN(observation_at) FROM observations"
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row or not row[0]:
+        return None
+    return int(str(row[0])[:4])
+
+
+with tab_climate:
+    m42_section(
+        "Clima",
+        eyebrow="ERA5-Land · rianalisi ECMWF",
+        subtitle=(
+            "Il fondale lungo sotto una serie osservata corta: temperatura, "
+            "umidità e precipitazione orarie dal 1950 per la cella di griglia "
+            "più vicina alla stazione."
+        ),
+    )
+
+    if not ERA5_DATABASE_PATH.exists():
+        st.info(
+            f"Nessun database di rianalisi in `{ERA5_DATABASE_PATH}`. "
+            "Si costruisce scaricando i GRIB dal CDS e importandoli:\n\n"
+            "```bash\n"
+            ".venv/bin/python download_era5_land.py \\\n"
+            "  --from 1950-01-01 --to 2026-07-31 --lat 45.6 --lon 12.3\n"
+            ".venv/bin/python import_era5_land.py \\\n"
+            "  raw/era5-land --database era5_land.sqlite\n"
+            "```"
+        )
+    else:
+        monthly_era5 = get_era5_monthly()
+
+        if monthly_era5.empty:
+            st.warning(
+                "Il database di rianalisi esiste ma è vuoto: manca l'import "
+                "dei GRIB scaricati."
+            )
+        else:
+            yearly_era5 = era5_yearly_from_monthly(monthly_era5)
+            ore_totali = int(monthly_era5["ore"].sum())
+            primo = monthly_era5.iloc[0]
+            ultimo = monthly_era5.iloc[-1]
+            incompleti = monthly_era5[~monthly_era5["completo"]]
+
+            tiles = [
+                m42_tile(
+                    "Periodo coperto",
+                    f"{int(primo['anno'])}-{int(ultimo['anno'])}",
+                    f"{ore_totali:,} ore".replace(",", "."),
+                ),
+                m42_tile(
+                    "Anni completi",
+                    str(len(yearly_era5)),
+                    "usati per medie e confronti",
+                ),
+            ]
+            if not yearly_era5.empty:
+                piu_caldo = yearly_era5.loc[yearly_era5["t_media"].idxmax()]
+                piu_freddo = yearly_era5.loc[yearly_era5["t_media"].idxmin()]
+                tiles += [
+                    m42_tile(
+                        "Media del periodo",
+                        f"{(yearly_era5['t_media'] * yearly_era5['ore']).sum() / yearly_era5['ore'].sum():.2f} °C",
+                        f"pioggia {yearly_era5['prec_mm'].mean():.0f} mm/anno",
+                    ),
+                    m42_tile(
+                        "Anno più caldo",
+                        f"{int(piu_caldo['anno'])}",
+                        f"{piu_caldo['t_media']:.2f} °C",
+                    ),
+                    m42_tile(
+                        "Anno più freddo",
+                        f"{int(piu_freddo['anno'])}",
+                        f"{piu_freddo['t_media']:.2f} °C",
+                    ),
+                    m42_tile(
+                        "Estremi orari",
+                        f"{yearly_era5['t_min'].min():.1f} / {yearly_era5['t_max'].max():.1f} °C",
+                        "minimo e massimo assoluti",
+                    ),
+                ]
+            m42_render_tiles(tiles)
+
+            if not incompleti.empty:
+                mesi_parziali = ", ".join(
+                    f"{ITALIAN_MONTHS_SHORT[int(riga['mese']) - 1]} {int(riga['anno'])}"
+                    for _, riga in incompleti.iterrows()
+                )
+                singolare = len(incompleti) == 1
+                st.caption(
+                    f"⏳ Scaricamento in corso: {mesi_parziali} "
+                    + (
+                        "è ancora incompleto e resta fuori"
+                        if singolare
+                        else "sono ancora incompleti e restano fuori"
+                    )
+                    + " da medie e confronti, che altrimenti risulterebbero"
+                    " falsati."
+                )
+
+            st.divider()
+
+            if len(yearly_era5) < 2:
+                st.info(
+                    "Servono almeno due anni completi per i confronti annuali. "
+                    "Per ora c'è "
+                    f"{len(yearly_era5)} anno completo: i grafici compaiono "
+                    "man mano che lo scaricamento avanza."
+                )
+            else:
+                st.write("### Andamento annuale")
+                render_chart(build_era5_annual_temperature_figure(yearly_era5))
+                render_chart(build_era5_annual_precipitation_figure(yearly_era5))
+
+                st.write("### Ciclo annuale")
+                render_chart(build_era5_monthly_climatology_figure(monthly_era5))
+
+                decenni = (
+                    monthly_era5.loc[monthly_era5["completo"], "anno"] // 10
+                ).nunique()
+                if decenni >= 2:
+                    render_chart(
+                        build_era5_decade_profile_figure(monthly_era5)
+                    )
+                else:
+                    st.caption(
+                        "Il confronto tra decenni compare quando lo storico "
+                        "ne copre almeno due completi."
+                    )
+
+            primo_anno_arpav = get_first_observation_year()
+            ultimo_anno_era5 = int(monthly_era5["anno"].max())
+            if primo_anno_arpav and ultimo_anno_era5 < primo_anno_arpav:
+                st.info(
+                    f"Il confronto con le osservazioni ARPAV — che partono dal "
+                    f"{primo_anno_arpav} — sarà possibile quando la rianalisi "
+                    f"arriverà a quell'anno: oggi si ferma al "
+                    f"{ultimo_anno_era5}. Nessuna ora in comune, quindi "
+                    "nessun grafico di scarto."
+                )
+
+            st.divider()
+            st.write("### Interroga i dati")
+            st.caption(
+                "Ricette pronte, scritte e verificate. Il modello "
+                "locale non scrive SQL: **sceglie** la ricetta e ne riempie i "
+                "parametri, che restano correggibili prima di eseguire. Chi "
+                "preferisce fa da sé, dalla libreria o scrivendo SQL."
+            )
+            st.caption(
+                "⚠️ ERA5 è la media di una cella di circa 11 × 8 km campionata "
+                "ogni ora: gli estremi risultano più smorzati di quelli di un "
+                "termometro. I conteggi di giorni oltre una soglia non sono "
+                "confrontabili con quelli di una stazione — in tutto "
+                "l'archivio non c'è un giorno a 35 °C, e non vuol dire che non "
+                "abbia mai fatto così caldo."
+            )
+
+            anni_completi = [int(anno) for anno in yearly_era5["anno"]]
+            copertura = (
+                f"ore dal {int(primo['anno'])} al {ultimo_anno_era5}. Anni "
+                "completi, gli unici utilizzabili per medie e confronti "
+                "annui: "
+                + (
+                    f"{anni_completi[0]}-{anni_completi[-1]}"
+                    if anni_completi
+                    else "nessuno"
+                )
+                + "."
+            )
+
+            modo = st.radio(
+                "Come vuoi procedere",
+                ("Chiedi in italiano", "Scegli dalla libreria", "SQL libero"),
+                horizontal=True,
+                key="era5_modo",
+                label_visibility="collapsed",
+            )
+
+            # Libreria di serie più le ricette salvate dall'utente. Si
+            # rilegge a ogni giro invece di stare in cache: il file è minuscolo
+            # e una ricetta appena salvata deve comparire subito, altrimenti
+            # sembra che il salvataggio non abbia funzionato.
+            ricette_disponibili = tutte_le_ricette()
+            ricette_per_id = {r["id"]: r for r in ricette_disponibili}
+
+            ricetta_scelta = None
+
+            if modo == "Chiedi in italiano":
+                domanda = st.text_input(
+                    "Domanda",
+                    key="era5_domanda",
+                    placeholder=(
+                        "Nel 1960 quanti giorni con massima ≥ 30 gradi?"
+                    ),
+                )
+                if st.button("Trova la ricetta", key="era5_proponi"):
+                    if not domanda.strip():
+                        st.warning("Scrivi prima una domanda.")
+                    else:
+                        try:
+                            with st.spinner("Il modello sta scegliendo…"):
+                                scelta = era5_scegli_ricetta(
+                                    domanda, copertura, ricette_disponibili
+                                )
+                            if scelta.get("id") in ricette_per_id:
+                                st.session_state["era5_ricetta"] = scelta["id"]
+                                ricetta_llm = ricette_per_id[scelta["id"]]
+                                proposti = scelta.get("parametri") or {}
+                                # I valori proposti diventano il contenuto dei
+                                # widget: restano correggibili prima di
+                                # eseguire, che è tutto il punto della forma
+                                # ibrida. Vanno riportati nei limiti, altrimenti
+                                # un valore fuori scala fa esplodere il widget
+                                # prima che la validazione possa spiegarlo.
+                                for parametro in ricetta_llm["parametri"]:
+                                    nome = parametro["nome"]
+                                    if nome not in proposti:
+                                        continue
+                                    try:
+                                        valore = float(proposti[nome])
+                                    except (TypeError, ValueError):
+                                        continue
+                                    valore = min(
+                                        max(valore, parametro["minimo"]),
+                                        parametro["massimo"],
+                                    )
+                                    st.session_state[
+                                        era5_chiave_parametro(
+                                            ricetta_llm, parametro
+                                        )
+                                    ] = (
+                                        valore
+                                        if parametro["tipo"] == "decimale"
+                                        else int(valore)
+                                    )
+                                st.session_state.pop("era5_risultato", None)
+                            else:
+                                st.warning(
+                                    "Nessuna ricetta della libreria risponde a "
+                                    "questa domanda. Prova a sceglierla a mano "
+                                    "o passa a «SQL libero», dove può provarci un "
+                                    "modello più capace."
+                                )
+                        except requests.RequestException as error:
+                            st.warning(
+                                f"⚠️ Modello {OLLAMA_MODEL} non raggiungibile "
+                                f"({error}). Puoi scegliere la ricetta a mano."
+                            )
+                        except ValueError as error:
+                            st.warning(
+                                f"Il modello non ha risposto in modo "
+                                f"utilizzabile ({error}). Scegli la ricetta a "
+                                "mano."
+                            )
+                if st.session_state.get("era5_ricetta") in ricette_per_id:
+                    ricetta_scelta = ricette_per_id[
+                        st.session_state["era5_ricetta"]
+                    ]
+                    st.success(f"Ricetta scelta: **{ricetta_scelta['titolo']}**")
+
+            elif modo == "Scegli dalla libreria":
+                titoli = {
+                    (
+                        f"{q['titolo']} ⭐"
+                        if q.get("utente")
+                        else q["titolo"]
+                    ): q["id"]
+                    for q in ricette_disponibili
+                }
+                titolo = st.selectbox(
+                    "Ricetta", list(titoli.keys()), key="era5_titolo"
+                )
+                ricetta_scelta = ricette_per_id[titoli[titolo]]
+                if ricetta_scelta.get("esempio"):
+                    st.caption(
+                        f"Esempio di domanda: _{ricetta_scelta['esempio']}_"
+                    )
+                if ricetta_scelta.get("utente"):
+                    st.caption("⭐ Ricetta salvata da te.")
+                    if st.button("Elimina questa ricetta", key="era5_elimina"):
+                        elimina_ricetta_utente(ricetta_scelta["id"])
+                        # Via anche la selezione, altrimenti al rerun il menù
+                        # cerca un titolo che non esiste più e si pianta.
+                        st.session_state.pop("era5_titolo", None)
+                        st.rerun()
+
+            if ricetta_scelta is not None:
+                valori = {}
+                if ricetta_scelta["parametri"]:
+                    colonne = st.columns(len(ricetta_scelta["parametri"]))
+                    for colonna, parametro in zip(
+                        colonne, ricetta_scelta["parametri"]
+                    ):
+                        chiave = era5_chiave_parametro(
+                            ricetta_scelta, parametro
+                        )
+                        with colonna:
+                            if parametro["tipo"] == "mese":
+                                indice = int(
+                                    st.session_state.get(
+                                        chiave, parametro["default"]
+                                    )
+                                )
+                                indice = min(max(indice, 1), 12)
+                                nome_mese = st.selectbox(
+                                    parametro["etichetta"],
+                                    ITALIAN_MONTHS,
+                                    index=indice - 1,
+                                    key=f"{chiave}_sel",
+                                )
+                                valori[parametro["nome"]] = (
+                                    ITALIAN_MONTHS.index(nome_mese) + 1
+                                )
+                            else:
+                                st.session_state.setdefault(
+                                    chiave, parametro["default"]
+                                )
+                                valori[parametro["nome"]] = st.number_input(
+                                    parametro["etichetta"],
+                                    min_value=parametro["minimo"],
+                                    max_value=parametro["massimo"],
+                                    step=1.0
+                                    if parametro["tipo"] == "decimale"
+                                    else 1,
+                                    key=chiave,
+                                )
+
+                try:
+                    parametri_puliti = normalizza_parametri(
+                        ricetta_scelta, valori
+                    )
+                except ValueError as error:
+                    parametri_puliti = None
+                    st.error(str(error))
+
+                with st.expander("La query che verrà eseguita"):
+                    st.code(ricetta_scelta["sql"], language="sql")
+
+                if st.button(
+                    "Esegui",
+                    key="era5_esegui_ricetta",
+                    disabled=parametri_puliti is None,
+                ):
+                    try:
+                        with st.spinner("Eseguo…"):
+                            risultato, troncato = era5_run_query(
+                                ricetta_scelta["sql"], parametri_puliti
+                            )
+                        st.session_state["era5_risultato"] = risultato
+                        st.session_state["era5_troncato"] = troncato
+                    except sqlite3.Error as error:
+                        st.session_state.pop("era5_risultato", None)
+                        st.error(f"SQLite: {error}")
+
+            if modo == "SQL libero":
+                st.session_state.setdefault("era5_sql", "")
+                # Il modello esterno vive **solo** qui. Scegliere una ricetta
+                # dall'elenco il 9B locale lo fa senza sbagliare; scrivere SQL
+                # nuovo no, ed è l'unico compito rimasto che meriti un modello
+                # più capace. Resta una scelta a mano: è a consumo, e una
+                # dashboard che ci passa da sola fa crescere un conto che
+                # nessuno ha deciso (brain42, MEMORANDUM 2026-08-03).
+                usa_esterno = False
+                if era5_esterno_configurato():
+                    motore = st.radio(
+                        "Chi scrive la query",
+                        (
+                            f"Locale · {OLLAMA_MODEL}",
+                            f"Esterno · {LLM_EXTERNAL_MODEL}",
+                        ),
+                        horizontal=True,
+                        key="era5_motore",
+                        help="L'esterno è a consumo e va scelto apposta.",
+                    )
+                    usa_esterno = motore.startswith("Esterno")
+                nome_modello = (
+                    LLM_EXTERNAL_MODEL if usa_esterno else OLLAMA_MODEL
+                )
+                domanda_libera = st.text_input(
+                    "Domanda (facoltativa, serve al modello per scrivere l'SQL)",
+                    key="era5_domanda_libera",
+                )
+                if st.button("Proponi la query", key="era5_proponi_sql"):
+                    if not domanda_libera.strip():
+                        st.warning("Scrivi prima una domanda.")
+                    else:
+                        try:
+                            with st.spinner("Il modello sta scrivendo…"):
+                                st.session_state["era5_sql"] = era5_propose_sql(
+                                    domanda_libera, copertura, usa_esterno
+                                )
+                            st.session_state.pop("era5_risultato", None)
+                        except requests.RequestException as error:
+                            st.warning(
+                                f"⚠️ Modello {nome_modello} non raggiungibile "
+                                f"({error}). Puoi scrivere l'SQL a mano qui "
+                                "sotto."
+                            )
+                sql_libero = st.text_area(
+                    "SQL da eseguire",
+                    key="era5_sql",
+                    height=160,
+                    help=(
+                        "Sola lettura: connessione in mode=ro con PRAGMA "
+                        "query_only, query interrotta dopo 15 secondi."
+                    ),
+                )
+                problema = (
+                    era5_validate_sql(sql_libero) if sql_libero.strip() else None
+                )
+                if problema:
+                    st.error(f"Query rifiutata: {problema}.")
+
+                # Se l'SQL contiene `:nome`, i valori si riempiono qui: senza,
+                # una query parametrica non sarebbe eseguibile, e quindi non
+                # sarebbe verificabile prima di finire nel ricettario — che è
+                # invece il solo modo in cui ha senso salvarla.
+                valori_liberi = {}
+                parametri_liberi = (
+                    parametri_da_sql(sql_libero) if sql_libero.strip() else []
+                )
+                if parametri_liberi:
+                    colonne_libere = st.columns(len(parametri_liberi))
+                    for colonna, parametro in zip(
+                        colonne_libere, parametri_liberi
+                    ):
+                        with colonna:
+                            chiave_libera = f"era5_libero_{parametro['nome']}"
+                            st.session_state.setdefault(
+                                chiave_libera, parametro["default"]
+                            )
+                            valori_liberi[parametro["nome"]] = st.number_input(
+                                parametro["etichetta"],
+                                min_value=parametro["minimo"],
+                                max_value=parametro["massimo"],
+                                step=1.0
+                                if parametro["tipo"] == "decimale"
+                                else 1,
+                                key=chiave_libera,
+                            )
+
+                if st.button(
+                    "Esegui",
+                    key="era5_esegui",
+                    disabled=bool(problema) or not sql_libero.strip(),
+                ):
+                    try:
+                        with st.spinner("Eseguo…"):
+                            risultato, troncato = era5_run_query(
+                                sql_libero, valori_liberi
+                            )
+                        st.session_state["era5_risultato"] = risultato
+                        st.session_state["era5_troncato"] = troncato
+                        st.session_state["era5_sql_eseguito"] = sql_libero
+                    except sqlite3.Error as error:
+                        st.session_state.pop("era5_risultato", None)
+                        st.error(f"SQLite: {error}")
+
+            if "era5_risultato" in st.session_state:
+                risultato = st.session_state["era5_risultato"]
+                if risultato.empty:
+                    st.info("La query non ha restituito righe.")
+                else:
+                    st.dataframe(risultato, width="stretch")
+                    if st.session_state.get("era5_troncato"):
+                        st.caption(
+                            "Mostrate le prime 2000 righe: il risultato è più "
+                            "lungo."
+                        )
+
+                    # Una query verificata funzionante vale quanto una di
+                    # quelle di serie: si salva e la volta dopo il modello può
+                    # sceglierla da sé, invece di riscriverla e risbagliarla.
+                    if modo == "SQL libero" and st.session_state.get(
+                        "era5_sql_eseguito"
+                    ):
+                        sql_da_salvare = st.session_state["era5_sql_eseguito"]
+                        with st.expander("Salva questa query nel ricettario"):
+                            parametri_rilevati = parametri_da_sql(sql_da_salvare)
+                            if parametri_rilevati:
+                                st.caption(
+                                    "Parametri riconosciuti: "
+                                    + ", ".join(
+                                        f"`:{p['nome']}`"
+                                        for p in parametri_rilevati
+                                    )
+                                    + " — diventeranno campi da riempire."
+                                )
+                            else:
+                                st.caption(
+                                    "Nessun parametro: la ricetta userà sempre "
+                                    "questi stessi valori. Per renderla "
+                                    "riusabile, sostituisci i numeri fissi con "
+                                    "`:anno`, `:mese`, `:soglia` o `:limite` "
+                                    "nell'SQL qui sopra, riesegui e salva."
+                                )
+                            st.session_state.setdefault(
+                                "era5_salva_esempio",
+                                st.session_state.get("era5_domanda_libera", ""),
+                            )
+                            titolo_nuovo = st.text_input(
+                                "Titolo della ricetta",
+                                key="era5_salva_titolo",
+                                placeholder="Giorni caldi tra due anni",
+                            )
+                            st.text_input(
+                                "Domanda d'esempio",
+                                key="era5_salva_esempio",
+                                help=(
+                                    "Serve al modello per capire quando questa "
+                                    "ricetta è quella giusta."
+                                ),
+                            )
+                            if st.button("Salva", key="era5_salva"):
+                                try:
+                                    salvata = salva_ricetta_utente(
+                                        titolo_nuovo,
+                                        st.session_state["era5_salva_esempio"],
+                                        sql_da_salvare,
+                                    )
+                                except (ValueError, OSError) as error:
+                                    st.error(f"Non salvata: {error}")
+                                else:
+                                    st.success(
+                                        f"Salvata come «{salvata['titolo']}»: "
+                                        "ora è nella libreria e il modello può "
+                                        "sceglierla."
+                                    )

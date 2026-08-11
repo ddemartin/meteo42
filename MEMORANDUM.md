@@ -15,6 +15,240 @@ portava già il suo motivo, la voce lo dice.
 
 ---
 
+## 2026-08-11 — la scheda "Clima", e un'LLM che propone l'SQL invece di eseguirlo
+
+La rianalisi entra nella dashboard con una scheda sua, la nona.
+
+**Si chiama "Clima", per funzione e non per fornitore.** Scartati due nomi:
+*Sentinel*, che è la costellazione di satelliti di Copernicus e non ha niente a
+che vedere con una rianalisi ECMWF — avrebbe promesso dati che non ci sono; e
+*ERA5-Land*, corretto ma che lega il nome della scheda a una sorgente che un
+giorno potrebbe cambiare. "Clima" dice cosa ci si trova, e sta accanto a
+"Storico Annuale" che sono invece le osservazioni.
+
+**Nelle medie entrano solo gli anni con dodici mesi completi.** Lo scaricamento
+dura giorni e per tutto quel tempo l'ultimo anno è tronco: la media del 1961
+sui soli gennaio-agosto dava **14,04 °C** contro i 12,7 °C del periodo, cioè un
+anno eccezionalmente caldo che non è mai esistito. Un errore che non si vede,
+perché il numero è plausibile. I mesi incompleti restano elencati sotto le
+tessere, così l'esclusione è visibile invece che silenziosa.
+
+**⚠️ Scoperto facendolo:** con la tolleranza a un'ora il 1950 spariva dai
+confronti. Ne mancano **due**, non una: quella che ERA5 non ha (a mezzanotte
+del primo giorno manca la corsa che la produce) e quella che porta via il
+raggruppamento in ora locale `UTC+1`, che fa cominciare gennaio alle 02:00.
+Buttare un anno intero per due ore su 8760 è peggio del difetto che la soglia
+doveva evitare. La tolleranza non può nascondere un buco vero: il download
+valida ogni blocco sul numero di messaggi, quindi i mesi interni sono interi.
+
+**L'aggregazione è in ora locale, non in UTC**, coerente con il resto della
+dashboard (2026-08-02): altrimenti ogni mese si porterebbe dietro un'ora di
+quello prima. Le medie non sono pesate esplicitamente perché le ore ERA5 durano
+tutte uguale — la media semplice *è già* pesata sulla durata (2026-07-30).
+
+### L'interrogazione in linguaggio naturale
+
+**Il modello propone l'SQL, la dashboard lo esegue solo su conferma.** Scartate
+le due alternative. *Query predefinite con l'LLM che si limita a narrare*:
+sicuro ma risponde solo alle domande già previste, e il punto di avere 76 anni
+di dati è farci le domande che non si erano previste. *Text-to-SQL diretto*:
+una query sbagliata non dà un errore, dà **un numero plausibile e falso** — lo
+stesso difetto che il 2026-07-31 aveva già portato a vietare al riassunto AI di
+inventare. Mostrare la query, lasciarla correggere e chiedere conferma costa un
+clic e rende l'errore visibile prima che diventi una risposta.
+
+**Sola lettura, tre difese sovrapposte:** `mode=ro` nell'URI, `PRAGMA
+query_only`, e il database delle osservazioni allegato anch'esso in `mode=ro`.
+Verificato che un `CREATE TABLE` sull'allegato fallisce con *attempt to write a
+readonly database*. In più la query viene rifiutata **prima** di partire se non
+comincia per `SELECT`/`WITH`, se contiene più istruzioni o parole chiave di
+scrittura: le difese di SQLite basterebbero, ma darebbero un errore oscuro a
+metà esecuzione invece di un motivo leggibile.
+
+**Il tetto di 2000 righe si applica leggendo il cursore, non riscrivendo
+l'SQL.** Aggiungere un `LIMIT` alla query di qualcun altro ne cambia il senso
+senza dirlo. E un `progress handler` la interrompe dopo 15 secondi, perché una
+scansione delle 671.000 ore senza indice bloccherebbe la pagina.
+
+**⚠️ Misurato, non supposto: senza esempi svolti nel prompt il modello da 9B
+sbaglia sistematicamente.** Due proposte su due non eseguibili — un `ORDER BY`
+prima di `UNION ALL`, e `AVG(SUM(...))` che SQLite rifiuta. Con tre esempi nel
+prompt (anno più caldo, media annua di pioggia con `WITH`, ciclo mensile),
+due su due corrette, e i numeri **coincidono con quelli delle tessere**,
+calcolati da un percorso di codice indipendente: 1124,66 mm/anno contro
+1125 mm/anno, 1950 a 13,54 °C in entrambi. Serve anche dire al modello quali
+anni sono completi: senza, calcolava la media annua includendo l'anno tronco.
+**Prezzo:** il prompt contiene anni concreti (1950-1960) che vanno letti come
+esempi, e l'elenco degli anni completi va rigenerato a ogni import.
+
+**Fallback:** se Ollama non risponde la casella dell'SQL resta scrivibile a
+mano e i grafici non se ne accorgono. Vale qui la regola del riassunto AI: la
+narrazione è un ornamento, non può portarsi via lo strumento.
+
+### La libreria di ricette: il modello sceglie, non scrive
+
+**Gli esempi nel prompt non sono bastati.** Alla prima domanda vera — «nel 1960
+quanti giorni con massima ≥ 35 gradi?» — il modello ha prodotto una funzione
+finestra dentro il `WHERE`, che SQLite rifiuta (*misuse of window function
+MAX()*). Terzo fallimento su una domanda che un utente pone davvero: il
+few-shot alza la percentuale di successo, non cambia il fatto che generare SQL
+sia il compito sbagliato per un 9B.
+
+**Da qui `era5_queries.py`: 23 ricette scritte e verificate a mano.** Il
+modello non scrive più SQL, **sceglie** un identificativo dall'elenco e riempie
+due campi numerici — un compito di un altro ordine di difficoltà. L'unico
+errore che gli resta possibile è scegliere la ricetta sbagliata, e si vede,
+perché il titolo scelto è scritto a schermo prima di eseguire. I parametri sono
+sempre *named parameters* legati da SQLite: il modello riempie valori, mai
+frammenti di SQL. Misurato dopo il cambio: le quattro domande di prova — giorni
+sopra soglia in un anno, medie delle minime di un mese, conteggi per decennio,
+periodo asciutto più lungo — tutte corrette, con i parametri estratti giusti
+(anche «febbraio 1956» → mese 2, e i 29 giorni dell'anno bisestile).
+
+**L'SQL libero resta**, in una modalità a parte: la libreria copre le domande
+prevedibili, e il punto di avere 76 anni di dati è anche fare quelle che non si
+erano previste. Ma non è più la strada principale.
+
+**Le query stanno in un modulo separato** e non in `dashboard.py` per poterle
+eseguire tutte in un test senza tirarsi dietro Streamlit — cosa che ha trovato
+subito il difetto del denominatore qui sotto.
+
+**⚠️ Scoperto facendolo, due volte.** *Primo:* nelle ricette per decennio la
+soglia stava nel `WHERE`, quindi filtrava **prima** del raggruppamento e la
+colonna «anni coperti» contava solo gli anni con almeno un giorno oltre soglia
+— il decennio 1950 risultava di 5 anni. Spostata in `FILTER`, il denominatore
+torna onesto (10 anni nel 1950, 2 nel 1960 ancora in corso). *Secondo, peggiore:*
+la chiave del widget di un parametro era il solo nome, così `soglia` si
+trascinava da una ricetta all'altra. Passando da «giorni con massima ≥ 30 °C» a
+«periodo asciutto più lungo» la soglia restava 30, ma lì si misura in
+millimetri: risultato, 161 giorni consecutivi di siccità in mezzo a 60 giorni
+di pioggia. Nessuno dei due numeri è assurdo di per sé, ed è proprio questo che
+lo rendeva invisibile. La chiave ora contiene l'identificativo della ricetta.
+
+### «Le 10 temperature più alte» sono due pomeriggi, non dieci giorni
+
+Domanda posta davvero: *media delle 10 temperature più alte per anno*. Il
+modello locale ha prodotto una CTE che seleziona anno e numero di riga ma
+**non** `temperature_c`, e poi la cerca fuori: `no such column`. Quarto modo
+diverso di sbagliare la stessa cosa, e conferma che l'SQL nuovo è il compito da
+lasciare a un modello più capace o a una ricetta.
+
+**Ma il difetto interessante è nella domanda, non nella query.** Su dati orari
+le dieci temperature più alte di un anno cadono quasi tutte nello stesso
+pomeriggio: misurato, nel 1952 stanno in **due sole giornate**, nel 1950 in
+quattro. Quel numero descrive l'intensità di un picco, non i dieci giorni più
+caldi dell'anno — che è quasi sempre ciò che si intende chiedendolo.
+
+Quindi **due ricette invece di una**: `media_ore_piu_calde_anno`, che risponde
+alla lettera e porta in tabella una colonna `giornate_distinte` perché
+l'ambiguità si veda nel risultato invece di doverla sospettare; e
+`media_giorni_piu_caldi_anno`, che classifica le **massime giornaliere** e
+quindi usa dieci giorni distinti. Sul 1952: 33,81 °C la prima, 32,87 °C la
+seconda. Verificato che il modello le distingue — «le 10 temperature più alte»
+sceglie la prima, «i 10 giorni più caldi» la seconda.
+
+La libreria sale a **25 ricette**.
+
+### Il ricettario cresce: una query verificata si salva
+
+**Una query scritta a mano e vista funzionare vale quanto una di serie**, e
+riscriverla la volta dopo significa rischiare di risbagliarla. Da *SQL libero*
+si salva con un titolo e una domanda d'esempio, e da quel momento è nella
+libreria come le altre: compare nel menù e **il modello può sceglierla da sé**.
+Verificato: salvata «Giorni caldi tra due anni», alla domanda «quanti giorni
+sopra 30 gradi tra il 1950 e il 1955?» il modello ha scelto proprio quella.
+
+**I parametri si leggono dall'SQL**, cercando i `:nome`, invece di farli
+dichiarare a parte: così non possono andare fuori sincrono con la query che
+devono riempire. I nomi noti alla libreria (`anno`, `mese`, `soglia`,
+`limite`) portano con sé etichetta, tipo e intervallo giusti, e il
+riconoscimento è per sottostringa — `:anno_fine` è un anno fra 1950 e 2026, non
+un decimale generico con default 0.
+
+**⚠️ Scoperto facendolo:** in *SQL libero* una query con parametri non era
+eseguibile — mancavano i valori da legare — e quindi non era **verificabile**,
+che è l'unica condizione a cui ha senso salvarla. Da qui i campi dei parametri
+anche lì. Il difetto non si vedeva finché la modalità serviva solo a eseguire
+query con valori scritti dentro.
+
+**Il file sta fuori dal versionamento** (`era5_ricette.json`, accanto al
+database), come `stations.json` per la ragione del 2026-07-30: è contenuto di
+questa installazione, non del progetto. Un file rovinato non porta via la
+scheda — si legge quel che si può e si tira dritto con le ricette di serie.
+
+### Via il «commenta il risultato»: era un ornamento senza funzione
+
+Il bottone che faceva riscrivere la tabella in prosa **è stato tolto**. Le
+risposte di questa scheda sono un numero o una manciata di righe — «0 giorni»,
+«−7,59 °C» — e una parafrasi non aggiunge niente a un numero che si legge da
+sé: allunga la pagina, costa una chiamata e introduce un punto in cui il
+modello può sbagliare, dove prima non ce n'erano. Diverso dal riassunto AI
+della scheda «Adesso» (2026-07-31), che riscrive **un report lungo** e lì il
+guadagno c'è.
+
+**Smentisce in parte la voce di stamattina**, che dava il commento per parte
+della forma ibrida: la parte che conta è mostrare la query e chiedere conferma,
+non far parlare il modello dopo.
+
+### `gpt-5.6-luna` come seconda opzione, mai come ricaduta
+
+Stessi nomi di variabili di brain42 — `LLM_EXTERNAL_BASE_URL`,
+`LLM_EXTERNAL_MODEL`, `LLM_EXTERNAL_API_KEY` — e stesso dialetto
+OpenAI-compatibile, così la configurazione è **una sola cosa da ricordare** per
+due progetti invece di due convenzioni divergenti.
+
+**Niente ricaduta automatica**, che è la regola già scritta in brain42
+(2026-08-03) e qui vale identica: chi chiede l'esterno lo chiede perché il
+locale non gli basta. Una dashboard che chiama da sola un'API a consumo quando
+il modello di casa incespica fa crescere un conto che nessuno ha deciso. Il
+selettore è a mano; quando il locale non trova nessuna ricetta, l'avviso
+*ricorda* che luna esiste, non ci passa sopra da solo.
+
+**⚠️ Corretto in giornata: luna vive solo in «SQL libero».** All'inizio il
+selettore del modello valeva per tutta la scheda. Ma la scelta della ricetta il
+9B locale la azzecca, e il commento del risultato non esiste più: l'unico
+compito rimasto in cui il locale sbaglia davvero è **scrivere SQL nuovo**, ed è
+lì che il modello esterno serve. Un selettore dove non serve non è neutro,
+suggerisce che l'esterno migliori qualcosa anche altrove.
+
+**Lo schema vincolato resta** per la scelta della ricetta sull'esterno, se un
+giorno tornerà a servire: `response_format: json_schema` con l'`enum` degli
+identificativi generato dalla libreria — una ricetta inesistente non è proprio
+rappresentabile, e i parametri non possono uscire come stringhe. È la
+differenza tra validare una risposta e non poterla sbagliare. Sul locale resta
+il parsing tollerante del JSON, perché lì lo schema non è garantito.
+`reasoning_effort: "none"`, come in brain42: scegliere da un elenco è un lavoro
+meccanico, e i livelli più alti si alzeranno **se e quando** un compito
+sbaglierà per aver pensato troppo poco.
+
+**Provato senza chiave**, puntando `LLM_EXTERNAL_BASE_URL` all'endpoint
+OpenAI-compatibile di Ollama (`http://localhost:11434/v1`): lo stesso codice —
+`/chat/completions`, schema vincolato, `reasoning_effort` — sceglie la ricetta
+ed esegue. Il percorso è verificato; quel che resta da misurare sull'endpoint
+vero è solo la qualità delle scelte, non il trasporto.
+
+**Il servizio launchd non eredita l'ambiente della shell**: le tre variabili
+vanno nel plist, e dopo averlo toccato serve `bootout` + `bootstrap`, non
+`kickstart`. Sta in CLAUDE.md, con il resto di ciò che serve sotto mano.
+
+**Approssimazione accettata, e dichiarata a schermo.** Le massime e minime
+giornaliere sono ricavate dai campioni orari, e ogni valore è la media di una
+cella di circa 11 × 8 km: gli estremi risultano **più smorzati** di quelli di
+un termometro. In tutto l'archivio 1950-1961 non c'è un solo giorno a 35 °C, e
+non significa che non abbia mai fatto così caldo. Contare i giorni oltre una
+soglia su ERA5 non dà lo stesso numero che darebbe la stazione, e la scheda lo
+dice sopra la libreria invece di lasciarlo scoprire. Il giorno si costruisce
+solo dalle giornate con tutte e 24 le ore: il primo e l'ultimo dell'archivio
+sono tronchi, e una massima calcolata su mezza giornata sarebbe più bassa del
+vero senza dirlo.
+
+**Il confronto con ARPAV non è ancora possibile e la scheda lo dice.** ERA5 è
+arrivato al 1961, le osservazioni partono dal 2010: zero ore in comune, quindi
+nessun grafico di scarto. Il messaggio si calcola dai dati, non è scritto a
+mano, e sparirà da solo quando lo scaricamento avrà superato il 2010.
+
+---
+
 ## 2026-08-11 — lo scaricamento ERA5 rallenta di sei volte, e il database separato regge alla prova
 
 Primo storico scaricato sul serio: **35 blocchi su 232** (1950-01-01 →

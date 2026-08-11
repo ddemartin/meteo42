@@ -47,3 +47,5 @@ build/
 # Local dashboard runtime config
 .dashboard_config.json
 stations.json
+# Ricette SQL salvate dall'utente: contenuto di questa installazione
+era5_ricette.json
