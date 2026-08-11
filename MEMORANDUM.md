@@ -15,6 +15,54 @@ portava già il suo motivo, la voce lo dice.
 
 ---
 
+## 2026-08-11 — lo scaricamento ERA5 rallenta di sei volte, e il database separato regge alla prova
+
+Primo storico scaricato sul serio: **35 blocchi su 232** (1950-01-01 →
+1961-08-31) in 18 ore, zero errori CDS.
+
+**La coda CDS degrada, e la stima iniziale era sbagliata di un ordine di
+grandezza.** Il tempo per blocco misurato sui `mtime` dei file: 20 min all'inizio,
+24 → 51 → 86 → 91 → **113 min** dopo diciotto ore. I file sono sempre da 1 MB e
+scendono in pochi secondi: il tempo se ne va tutto tra `accepted` e l'inizio del
+trasferimento, cioè in coda, e la coda si allunga man mano che si consuma la
+quota dell'utente. Conseguenza pratica: **lo storico completo non sono 3 giorni
+ma 6-15**, e la stima va fatta sul ritmo recente, mai sulla prima ora. Da qui la
+scelta di un ciclo di retry che si arrende dopo **5 fallimenti consecutivi senza
+progresso** invece di riprovare all'infinito: gli ultimi blocchi del 2026
+falliranno comunque, perché ERA5-Land esce con mesi di ritardo sul tempo reale,
+e un ciclo cieco girerebbe a vuoto per giorni.
+
+**Interrompere un download non costa niente.** Una richiesta già `accepted` viene
+elaborata lato CDS anche se il client muore: al rilancio lo stesso blocco arriva
+in secondi invece che in ore. Interrompere per rilanciare con `python -u` — senza
+il buffering che rende illeggibile un log lungo tre giorni — è stato gratis.
+
+**La de-accumulazione della precipitazione a cavallo di due file funziona, ed è
+verificata sui dati, non solo sulla carta.** Al confine `1950-04-30 23:00` →
+`1950-05-01 00:00` l'accumulo `0,002 mm` del primo record del file nuovo è stato
+confrontato con l'ora precedente **letta dal database**, dando `0,0 mm` invece
+di un falso scroscio; all'01:00 si vede il reset del run. Sulle 102.263 ore
+importate: **zero NULL** su temperatura, dew point, umidità e precipitazione,
+nessun buco (righe = ore attese), nessun `dew > temp`, e nessuno scatto del
+controllo sull'accumulo decrescente. Medie annue 12,8-13,5 °C e 880-1365 mm/anno,
+plausibili per la pianura veneta.
+
+**⚠️ Smentita una scelta, poi rimessa a posto.** I dati erano stati importati in
+`arpav_meteo.sqlite` con l'argomento che «altrimenti ogni confronto diventa un
+`ATTACH`» — cioè esattamente il costo che la voce del 2026-08-10 aveva già pesato
+e accettato, deciso senza rileggerla. L'import è stato annullato (`DROP` delle tre
+tabelle, senza `VACUUM`: 6 MB su 497 tornano nella freelist e li riusa lo
+scraper) e rifatto su `era5_land.sqlite`. La scelta del database separato **resta
+valida**; quello che serviva era leggere il memorandum prima di contraddirlo.
+Costo del giro: 6 MB di freelist e un `DROP` su un DB di produzione.
+
+**Misura di dimensione, ora che c'è un campione vero:** 102.263 ore occupano
+**6,0 MB**, cioè ~58 byte/ora. Le 671.303 ore dello storico completo staranno in
+**~40 MB** — un trentesimo del DB operativo, e un motivo in meno per rimpiangere
+il file separato.
+
+---
+
 ## 2026-08-10 — ERA5-Land: 76 anni di rianalisi, in un database separato
 
 Le osservazioni ARPAV per Mogliano partono dal 2010. ERA5-Land, la rianalisi
