@@ -256,7 +256,11 @@ osservazioni — sta in [MEMORANDUM.md](MEMORANDUM.md) (2026-08-07).
     `era5_ricette.json`, fuori dal versionamento, e si eliminano dal menù
 
   In ogni caso la query è visibile prima di partire e si esegue solo su
-  conferma. Se sono configurate `LLM_EXTERNAL_BASE_URL` /
+  conferma. Il risultato si guarda come **tabella o come grafico**: si
+  scelgono asse orizzontale e colonne, la pioggia va a barre sull'asse destro
+  in millimetri e le temperature a linee su quello sinistro, perché unità
+  diverse non stanno sulla stessa scala. Vale per qualsiasi risultato, anche
+  di una query scritta a mano Se sono configurate `LLM_EXTERNAL_BASE_URL` /
   `LLM_EXTERNAL_MODEL` / `LLM_EXTERNAL_API_KEY`, nella sola modalità *SQL
   libero* compare un selettore per usare `gpt-5.6-luna` al posto del modello
   locale — scelta manuale, mai automatica (vedi [CLAUDE.md](CLAUDE.md)) La connessione è in

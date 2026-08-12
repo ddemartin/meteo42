@@ -149,6 +149,43 @@ sceglie la prima, «i 10 giorni più caldi» la seconda.
 
 La libreria sale a **25 ricette**.
 
+### I risultati si possono guardare come grafico, e le unità non si mescolano
+
+Richiesta: «mostra il **grafico** delle precipitazioni di novembre 1966».
+Mancava il pezzo a monte, non il disegno: **nessuna ricetta restituiva una
+serie**, erano tutte aggregati, e un grafico vuole una riga per punto. Da qui
+`andamento_giornaliero_mese` (una riga per giorno, con minima/media/massima e
+pioggia) e `andamento_orario_giorno`. La libreria sale a **27 ricette**.
+
+Il disegno è generico e vale per qualunque risultato, anche di una query
+scritta a mano: si scelgono asse orizzontale e colonne, e la vista parte da
+*Grafico* quando il risultato ha almeno tre righe e una colonna numerica —
+una serie si guarda meglio disegnata, un conteggio no.
+
+**⚠️ Il primo grafico era sbagliato, e in modo elegante.** Metteva le tre
+temperature e la pioggia sullo stesso asse: gradi fra −20 e 35, millimetri fra
+0 e 80. Leggibile a fatica e suggerisce confronti che non esistono. Ora
+pioggia a barre sull'asse destro e temperature a linee su quello sinistro —
+il meteogramma di sempre, che qui viene da sé perché i due gruppi si
+riconoscono dal nome della colonna. La pioggia va **a barre** e non a linea per
+una ragione sua: è una quantità caduta in un intervallo, e unire due giorni
+piovosi con una linea direbbe che è piovuto anche nel mezzo.
+
+Le percentuali (umidità) restano fuori dalla selezione iniziale quando c'è
+dell'altro: uno 0-100 sullo stesso asse di temperature invernali le schiaccia
+contro il fondo. Si aggiungono a mano, e da sole si disegnano benissimo.
+
+**⚠️ E di nuovo il difetto delle chiavi appiccicate**, terza volta: scegliendo
+la sola pioggia il grafico restava a linee, perché il tipo scelto prima
+sopravviveva al cambio di selezione. La chiave del widget ora dipende dalla
+famiglia di colonne. È lo stesso errore dei parametri delle ricette (soglia in
+gradi che diventava soglia in millimetri): in Streamlit **una chiave di widget
+è uno stato globale**, e va legata a tutto ciò da cui il valore dipende.
+
+**Verifica storica gradita:** la serie giornaliera di novembre 1966 mostra
+52 mm il giorno 3 e 78 mm il giorno 4. È l'alluvione del 1966, nel posto e nei
+giorni giusti — una conferma che i dati sono quelli che dicono di essere.
+
 ### Il ricettario cresce: una query verificata si salva
 
 **Una query scritta a mano e vista funzionare vale quanto una di serie**, e

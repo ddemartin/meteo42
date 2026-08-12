@@ -2466,6 +2466,85 @@ def era5_run_query(
         conn.close()
 
 
+# Colonne che si disegnano a barre e non a linea: una pioggia oraria o
+# giornaliera è una quantità che cade in un intervallo, non una grandezza che
+# esiste fra un punto e l'altro. Unire con una linea due giorni piovosi
+# suggerirebbe che sia piovuto anche nel mezzo.
+ERA5_COLONNE_A_BARRE = re.compile(r"pioggia|prec|_mm$|mm$", re.IGNORECASE)
+
+
+def era5_figura_risultato(
+    frame: pd.DataFrame,
+    colonna_x: str,
+    colonne_y: list[str],
+    tipo: str,
+) -> go.Figure:
+    """Disegna il risultato di una query, tenendo separate le unità di misura.
+
+    Quando nella stessa tabella ci sono temperature e pioggia — cosa normale,
+    la serie giornaliera di un mese le ha entrambe — su un asse solo i gradi
+    stanno fra -20 e 35 e i millimetri fra 0 e 80: il grafico si legge male e
+    suggerisce confronti che non esistono. La pioggia va allora sull'asse
+    destro, a barre, e le temperature restano linee a sinistra. È il
+    meteogramma di sempre, e qui viene da sé perché i due gruppi si
+    riconoscono dal nome della colonna.
+    """
+    a_barre = [c for c in colonne_y if ERA5_COLONNE_A_BARRE.search(c)]
+    a_linee = [c for c in colonne_y if c not in a_barre]
+    doppio_asse = bool(a_barre) and bool(a_linee)
+    if not doppio_asse:
+        # Un gruppo solo: comanda la scelta di chi guarda.
+        a_barre = colonne_y if tipo == "Barre" else []
+        a_linee = [] if tipo == "Barre" else colonne_y
+
+    fig = go.Figure()
+    for colonna in a_linee:
+        fig.add_trace(
+            go.Scatter(
+                x=frame[colonna_x],
+                y=frame[colonna],
+                name=colonna,
+                mode="lines+markers",
+                hovertemplate="%{x} · %{y}<extra>" + colonna + "</extra>",
+            )
+        )
+    for colonna in a_barre:
+        fig.add_trace(
+            go.Bar(
+                x=frame[colonna_x],
+                y=frame[colonna],
+                name=colonna,
+                yaxis="y2" if doppio_asse else "y",
+                marker_color="#0EA5E9" if doppio_asse else None,
+                opacity=0.65 if doppio_asse else 1.0,
+                hovertemplate="%{x} · %{y}<extra>" + colonna + "</extra>",
+            )
+        )
+
+    fig.update_layout(
+        xaxis_title=colonna_x,
+        yaxis_title=colonne_y[0] if len(colonne_y) == 1 else "",
+        height=420,
+        hovermode="x unified",
+        barmode="group",
+        legend=MOBILE_LEGEND,
+        margin=MOBILE_CHART_MARGIN,
+        showlegend=len(colonne_y) > 1,
+    )
+    if doppio_asse:
+        fig.update_layout(
+            yaxis_title="°C",
+            yaxis2=dict(
+                title="mm",
+                overlaying="y",
+                side="right",
+                showgrid=False,
+                rangemode="tozero",
+            ),
+        )
+    return fig
+
+
 def era5_chiama_esterno(
     sistema: str,
     utente: str,
@@ -5176,7 +5255,134 @@ with tab_climate:
                 if risultato.empty:
                     st.info("La query non ha restituito righe.")
                 else:
-                    st.dataframe(risultato, width="stretch")
+                    colonne_numeriche = [
+                        colonna
+                        for colonna in risultato.columns
+                        if pd.api.types.is_numeric_dtype(risultato[colonna])
+                    ]
+                    # Una serie si guarda meglio disegnata, un conteggio no:
+                    # la vista parte da quella giusta per la forma del
+                    # risultato, poi resta quella che sceglie chi guarda.
+                    st.session_state.setdefault(
+                        "era5_vista",
+                        "Grafico"
+                        if len(risultato) >= 3 and colonne_numeriche
+                        else "Tabella",
+                    )
+                    vista = st.radio(
+                        "Vista",
+                        ("Tabella", "Grafico"),
+                        horizontal=True,
+                        key="era5_vista",
+                        label_visibility="collapsed",
+                    )
+
+                    if vista == "Tabella":
+                        st.dataframe(risultato, width="stretch")
+                    elif not colonne_numeriche or len(risultato) < 2:
+                        st.info(
+                            "Questo risultato non ha la forma di una serie: "
+                            "una riga sola, o nessuna colonna numerica. "
+                            "Guardalo come tabella."
+                        )
+                    else:
+                        non_numeriche = [
+                            colonna
+                            for colonna in risultato.columns
+                            if colonna not in colonne_numeriche
+                        ]
+                        asse_x_default = (
+                            non_numeriche[0]
+                            if non_numeriche
+                            else risultato.columns[0]
+                        )
+                        colonna_x = st.selectbox(
+                            "Asse orizzontale",
+                            list(risultato.columns),
+                            index=list(risultato.columns).index(asse_x_default),
+                            key="era5_grafico_x",
+                        )
+                        candidate_y = [
+                            colonna
+                            for colonna in colonne_numeriche
+                            if colonna != colonna_x
+                        ]
+                        # Le percentuali restano fuori dalla scelta iniziale
+                        # quando c'è dell'altro: un'umidità fra 0 e 100 sullo
+                        # stesso asse di temperature fra -20 e 5 schiaccia le
+                        # temperature contro il fondo. Si aggiunge a mano se
+                        # interessa, e da sola si disegna benissimo.
+                        percentuali = [
+                            colonna
+                            for colonna in candidate_y
+                            if re.search(r"pct|umidit|percent", colonna, re.I)
+                        ]
+                        preselezione = [
+                            colonna
+                            for colonna in candidate_y
+                            if colonna not in percentuali
+                        ] or candidate_y
+                        colonne_y = st.multiselect(
+                            "Cosa disegnare",
+                            candidate_y,
+                            default=preselezione,
+                            key="era5_grafico_y",
+                        )
+                        if not colonne_y:
+                            st.info("Scegli almeno una colonna da disegnare.")
+                        else:
+                            gruppi_misti = any(
+                                ERA5_COLONNE_A_BARRE.search(colonna)
+                                for colonna in colonne_y
+                            ) and any(
+                                not ERA5_COLONNE_A_BARRE.search(colonna)
+                                for colonna in colonne_y
+                            )
+                            tipo_default = (
+                                "Barre"
+                                if all(
+                                    ERA5_COLONNE_A_BARRE.search(colonna)
+                                    for colonna in colonne_y
+                                )
+                                else "Linee"
+                            )
+                            # La chiave dipende dalla famiglia di colonne
+                            # scelte: altrimenti il tipo scelto per una serie
+                            # di temperature resta appiccicato quando si passa
+                            # alla sola pioggia, che vuole le barre. Stesso
+                            # difetto dei parametri delle ricette, stessa cura.
+                            chiave_tipo = (
+                                "era5_grafico_tipo_mm"
+                                if tipo_default == "Barre"
+                                else "era5_grafico_tipo_altro"
+                            )
+                            st.session_state.setdefault(
+                                chiave_tipo, tipo_default
+                            )
+                            if gruppi_misti:
+                                # La scelta linee/barre non si applica: qui
+                                # comanda l'unità di misura, non il gusto.
+                                tipo = tipo_default
+                                st.caption(
+                                    "Pioggia a barre sull'asse destro (mm), "
+                                    "temperature a linee su quello sinistro "
+                                    "(°C): unità diverse non stanno sulla "
+                                    "stessa scala."
+                                )
+                            else:
+                                tipo = st.radio(
+                                    "Tipo",
+                                    ("Linee", "Barre"),
+                                    horizontal=True,
+                                    key=chiave_tipo,
+                                    label_visibility="collapsed",
+                                )
+                            render_chart(
+                                era5_figura_risultato(
+                                    risultato, colonna_x, colonne_y, tipo
+                                )
+                            )
+
                     if st.session_state.get("era5_troncato"):
                         st.caption(
                             "Mostrate le prime 2000 righe: il risultato è più "

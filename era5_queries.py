@@ -91,6 +91,17 @@ def _mese(default: int = 7) -> dict:
     }
 
 
+def _giorno(default: int = 1) -> dict:
+    return {
+        "nome": "giorno",
+        "etichetta": "Giorno",
+        "tipo": "intero",
+        "default": default,
+        "minimo": 1,
+        "massimo": 31,
+    }
+
+
 def _soglia(etichetta: str, default: float) -> dict:
     return {
         "nome": "soglia",
@@ -205,6 +216,39 @@ SELECT ROUND(AVG(tmin), 2) AS media_minime,
 FROM giorni
 WHERE CAST(strftime('%Y', giorno) AS INTEGER) = :anno
   AND CAST(strftime('%m', giorno) AS INTEGER) = :mese""",
+    },
+    {
+        "id": "andamento_giornaliero_mese",
+        "titolo": "Andamento giorno per giorno di un mese",
+        "esempio": "Mostra il grafico delle precipitazioni di novembre 1966",
+        "parametri": [_anno(1966), _mese(11)],
+        # Una riga per giorno, non un aggregato: è la forma che serve per
+        # disegnare un grafico, e nessuna delle altre ricette la produce.
+        "sql": f"""{DAILY_CTE}
+SELECT giorno,
+       ROUND(tmin, 2)    AS minima,
+       ROUND(tmedia, 2)  AS media,
+       ROUND(tmax, 2)    AS massima,
+       ROUND(mm, 1)      AS pioggia_mm
+FROM giorni
+WHERE CAST(strftime('%Y', giorno) AS INTEGER) = :anno
+  AND CAST(strftime('%m', giorno) AS INTEGER) = :mese
+ORDER BY giorno""",
+    },
+    {
+        "id": "andamento_orario_giorno",
+        "titolo": "Andamento ora per ora di un giorno",
+        "esempio": "Come è andata la temperatura ora per ora il 17 febbraio 1956?",
+        "parametri": [_anno(1956), _mese(2), _giorno(17)],
+        "sql": """SELECT strftime('%H:%M', valid_at_utc + 3600, 'unixepoch') AS ora,
+       ROUND(temperature_c, 2)          AS temperatura,
+       ROUND(dewpoint_c, 2)             AS dew_point,
+       ROUND(relative_humidity_pct, 1)  AS umidita_pct,
+       ROUND(precipitation_mm, 2)       AS pioggia_mm
+FROM weather_hourly
+WHERE date(valid_at_utc + 3600, 'unixepoch') =
+      printf('%04d-%02d-%02d', :anno, :mese, :giorno)
+ORDER BY valid_at_utc""",
     },
     {
         "id": "medie_mensili_anno",
@@ -557,6 +601,7 @@ RICETTE_UTENTE_PATH = Path("era5_ricette.json")
 _COSTRUTTORI_PARAMETRI = {
     "anno": lambda: _anno(),
     "mese": lambda: _mese(),
+    "giorno": lambda: _giorno(),
     "soglia": lambda: _soglia("Soglia", 0.0),
     "limite": lambda: _limite(),
 }
