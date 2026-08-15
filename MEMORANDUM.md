@@ -15,6 +15,108 @@ portava già il suo motivo, la voce lo dice.
 
 ---
 
+## 2026-08-13 — la cella ERA5-Land è tutta terraferma: misurato, non dedotto
+
+La domanda era legittima e non aveva ancora una risposta: la cella
+`45,6 N / 12,3 E` sta a una decina di chilometri dalla laguna, e una cella che
+ne prendesse dentro un pezzo darebbe temperature smorzate dall'acqua — un
+difetto che non si vede, perché i numeri restano plausibili.
+
+Il nodo è il centro di un rettangolo di `0,1°`: **45,55–45,65 N / 12,25–12,35 E**,
+11,1 × 7,8 km, 87 km². Quattro misure indipendenti, tutte concordi:
+
+| controllo | risultato |
+|---|---|
+| linea di costa (OSM `natural=coastline`) dentro la cella | **0 elementi** |
+| acqua di marea più vicina (barene, `tidalflat`, coastline) | **3,66 km** dal bordo (45,5209 N 12,3719 E), ~10 km dal centro |
+| costa aperta (laguna navigabile / mare) | 14,1 km dal bordo, 20,6 km dal centro |
+| quote del terreno (Copernicus DEM, griglia 9×9 nella cella) | min 0 m, media 6,4 m, max 16 m |
+
+**L'angolo sud-est ha rischiato di far dire di no.** Due punti della griglia
+davano quota `0,0 m`, che su un DEM è anche il valore dell'acqua. Infittendo il
+campionamento (36 punti su ~3 km) e interrogando l'OSM entro 300 m si vede che
+è **bonifica agricola**: campi, strade, fossi e canali di scolo, con un punto a
+−2 m che è terra sotto il livello del mare, normale da quelle parti. Nessun
+poligono d'acqua li contiene. La lezione è che la quota da sola non separa
+l'acqua dalla terra bassa, e infatti da sola non è stata creduta.
+
+Dentro la cella l'acqua mappata è **2,08 km², il 2,4%**: lo Zero, il Dese,
+qualche bacino e i fossi. È l'acqua interna di qualsiasi cella di pianura
+veneta, non un pezzo di laguna.
+
+**Riscontro dal dato stesso:** ERA5-Land è prodotto solo sui punti di terra, e
+sul mare i valori sono mascherati. Il nodo ha 242.519 ore senza buchi, quindi
+anche ECMWF lo classifica come terra — non è solo la geometria dell'OSM a dirlo.
+
+**Il margine è più stretto di quanto sembri.** Il nodo immediatamente a sud,
+`45,5 / 12,3`, ha il bordo del suo rettangolo a `45,45` e la laguna se la
+prende dentro. Quello scelto — che resta il più vicino alla stazione, 2,2 km —
+sta dalla parte giusta per un solo passo di griglia: se un domani si cambiasse
+stazione o si arrotondasse diversamente, questa verifica va rifatta, non
+ereditata.
+
+**Come si rifà**, senza dipendenze nuove: Overpass API per costa, acque e
+barene nel riquadro della cella (`way["natural"="coastline"](45.55,12.25,45.65,12.35)`
+e la stessa cosa per `natural=water|wetland`), e l'API di elevazione di
+Open-Meteo per le quote su una griglia di punti. **Scartata** l'idea di
+scaricare la maschera terra/mare dal CDS: quella di ERA5 sta a `0,25°`, cioè
+più grossa della cella che deve giudicare, e avrebbe risposto a una domanda
+diversa da quella posta.
+
+---
+
+## 2026-08-13 — i grafici della scheda Clima hanno uno stile solo, e gli assi smettono di decidere da soli
+
+Quattro difetti visti guardando la scheda, non leggendo il codice. Si curano in
+un posto solo — `stile_clima`, chiamata per ultima da ogni figura della scheda —
+perché quattro `update_layout` copiati sono quattro posti dove il quinto grafico
+dimenticherà qualcosa.
+
+**Via i pallini dalle serie continue.** Su 76 punti annuali o su dodici mesi il
+marcatore non aggiunge un'informazione: ingrossa la linea e le fa perdere la
+forma, che è l'unica cosa che si va a cercare in un ciclo annuale. Il valore
+puntuale resta a un tocco di distanza nel tooltip, che c'era già.
+
+**Le tacche dell'asse Y le decide `passo_gradevole`, non Plotly.** Sulle
+temperature di luglio — che stanno in nove gradi — la scelta automatica dava
+**15 / 20 / 25**: tre tacche, e una serie che si muove tutta dentro il primo
+intervallo. Ora il passo è il numero tondo (1, 2 o 5 × 10ⁿ) che divide
+l'intervallo dei dati in circa dieci, quindi luglio si legge di grado in grado.
+**Scartato il 2,5** che pure sarebbe "tondo": una scala di temperature che sale
+di 2,5 °C alla volta si legge peggio di una che ne salta 5, e sarebbe stato
+spostare il difetto invece di toglierlo.
+
+**Le tacche dell'asse X partono dal primo valore.** Una serie di mesi cominciava
+da **3**, perché la prima tacca automatica cadeva lì: sembrava che i dati
+partissero da marzo. Con `tick0` sul minimo, gennaio è gennaio e il primo del
+mese è il primo. Nei risultati delle query una colonna `mese` di interi fra 1 e
+12 porta direttamente i nomi dei mesi, e sugli assi di categorie le etichette
+sono tutte forzate con `tickvals`: Plotly ne salta una sì e una no appena il
+riquadro si stringe, ed è lo stesso difetto visto da un'altra parte.
+
+**La legenda non tocca più il titolo dell'asse X.** Erano appiccicati perché
+occupavano la stessa fascia sotto al riquadro. Invece di allontanarli di
+qualche pixel — cura che il primo schermo stretto avrebbe disfatto — sono
+spariti i titoli degli assi dove non dicevano niente ("Mese" sotto Gen-Dic,
+"Anno" sotto gli anni) e l'unità di misura è passata nel titolo del grafico
+(«Temperatura media annua · °C»). Sotto al riquadro resta solo la legenda,
+quindi non ha più niente da toccare, e il margine inferiore cresce con il
+numero di voci invece di essere il valore fisso di `MOBILE_CHART_MARGIN`.
+
+**I decenni passano da tinte qualitative a una scala fredda→calda.** I decenni
+sono ordinati: `year_qualitative_color` — che resta giusta dove un anno deve
+avere sempre lo stesso colore a prescindere dal filtro — li dipingeva di colori
+non confrontabili tra loro, e lo spostamento del clima si vedeva solo leggendo
+la legenda. Ora il blu è il decennio più vecchio, il rosso il più recente, e
+l'ultimo è anche più spesso perché è quello che si va a guardare.
+
+**Cambiata solo la scheda Clima.** `MOBILE_LEGEND` e `MOBILE_CHART_MARGIN`
+restano come sono per le altre schede: se questo stile regge all'uso, sarà da
+estendere lì, ma cambiare nove schede per un difetto visto su una avrebbe
+mescolato la cura con l'esperimento.
+
+---
+
 ## 2026-08-11 — la scheda "Clima", e un'LLM che propone l'SQL invece di eseguirlo
 
 La rianalisi entra nella dashboard con una scheda sua, la nona.

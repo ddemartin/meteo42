@@ -237,7 +237,12 @@ osservazioni — sta in [MEMORANDUM.md](MEMORANDUM.md) (2026-08-07).
 - Rianalisi ERA5-Land dal 1950 (`era5_land.sqlite`, database separato): il
   fondale climatico lungo sotto una serie osservata corta
 - Temperatura media e precipitazione annua, ciclo annuale con la banda tra
-  l'anno più freddo e il più caldo, ciclo annuale per decennio
+  l'anno più freddo e il più caldo, ciclo annuale per decennio (dal blu del
+  decennio più vecchio al rosso del più recente)
+- I grafici della scheda hanno uno stile comune: linee senza marcatori, tacche
+  dell'asse Y su un passo tondo scelto sull'intervallo dei dati invece che
+  lasciato all'automatismo, asse X che parte dal primo valore e mesi scritti
+  per nome, unità di misura nel titolo e legenda sotto al riquadro
 - Solo gli anni con dodici mesi completi entrano in medie e confronti: durante
   lo scaricamento — che dura giorni — l'ultimo anno è tronco, e una media
   calcolata su mezzo anno sarebbe falsa senza sembrarlo. I mesi ancora

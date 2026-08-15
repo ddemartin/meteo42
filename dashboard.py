@@ -2136,6 +2136,172 @@ def era5_yearly_from_monthly(monthly: pd.DataFrame) -> pd.DataFrame:
     return yearly[yearly["mesi"] == 12].drop(columns=["_somma", "mesi"])
 
 
+# --- Stile dei grafici della scheda Clima -----------------------------------
+#
+# Uno stile solo, applicato da `stile_clima` come ultimo passo di ogni figura
+# invece di ripetere `update_layout` in ognuna. Cura quattro difetti osservati
+# (MEMORANDUM 2026-08-13):
+#  - i pallini su una serie continua non aggiungono niente e la ingrossano:
+#    restano solo le linee, e il valore puntuale lo dà comunque il tooltip;
+#  - le tacche automatiche dell'asse Y saltavano di 5 °C anche su una serie che
+#    ne copre 9 — un luglio letto su una scala 15/20/25 non si legge;
+#  - i mesi sull'asse X partivano dalla tacca che capitava (3, 6, 9…) invece
+#    che dal primo valore;
+#  - la legenda orizzontale finiva addosso al titolo dell'asse X.
+# I titoli degli assi spariscono dove sono ovvi (mesi, anni) e l'unità di
+# misura passa nel titolo del grafico: sotto al riquadro resta solo la legenda,
+# che è anche il motivo per cui non si scontrano più.
+CLIMATE_GRID_COLOR = "rgba(128, 128, 128, 0.20)"
+CLIMATE_HEIGHT = 380
+CLIMATE_LINE_WIDTH = 2.4
+CLIMATE_WARM = "#EF4444"
+CLIMATE_COOL = "#0EA5E9"
+# I decenni sono ordinati, quindi vogliono una scala ordinata: freddo→caldo dal
+# più vecchio al più recente. Con le tinte qualitative di `year_qualitative_color`
+# — giuste altrove, dove un anno deve avere sempre lo stesso colore — lo
+# spostamento del clima si vedeva solo leggendo la legenda.
+CLIMATE_DECADE_SCALE = [
+    "#1E40AF", "#3B82F6", "#0EA5E9", "#F59E0B", "#EF4444", "#991B1B",
+]
+
+
+def climate_decade_color(posizione: float) -> str:
+    """Un colore della scala dei decenni, con `posizione` da 0 (vecchio) a 1."""
+    scala = CLIMATE_DECADE_SCALE
+    punto = min(max(posizione, 0.0), 1.0) * (len(scala) - 1)
+    basso = int(math.floor(punto))
+    alto = min(basso + 1, len(scala) - 1)
+    frazione = punto - basso
+    canali = []
+    for indice in (0, 2, 4):
+        inizio = int(scala[basso].lstrip("#")[indice : indice + 2], 16)
+        fine = int(scala[alto].lstrip("#")[indice : indice + 2], 16)
+        canali.append(round(inizio + (fine - inizio) * frazione))
+    return "#{:02X}{:02X}{:02X}".format(*canali)
+
+
+def passo_gradevole(intervallo: float, divisioni: int = 10) -> float:
+    """Un passo «tondo» (1, 2 o 5 × 10^n) che divide l'intervallo in ~`divisioni`.
+
+    Solo 1/2/5 e non 2.5: sulle temperature una scala che sale di 2,5 °C alla
+    volta si legge peggio di una che ne salta 5, ed è il difetto che si voleva
+    togliere, non spostare.
+    """
+    if not math.isfinite(intervallo) or intervallo <= 0:
+        return 1.0
+    grezzo = intervallo / max(divisioni, 1)
+    esponente = math.floor(math.log10(grezzo))
+    base = grezzo / 10**esponente
+    for candidato in (1, 2, 5):
+        if base <= candidato:
+            return candidato * 10**esponente
+    return 10 ** (esponente + 1)
+
+
+def _valori_finiti(valori) -> list[float]:
+    numeri = pd.to_numeric(pd.Series(list(valori)), errors="coerce").dropna()
+    return [float(v) for v in numeri if math.isfinite(float(v))]
+
+
+def stile_asse_y(fig: go.Figure, valori, *, da_zero: bool = False) -> None:
+    """Tacche fitte quanto basta: ~10 divisioni tonde sull'intervallo dei dati."""
+    finiti = _valori_finiti(valori)
+    if not finiti:
+        return
+    minimo = min(finiti + ([0.0] if da_zero else []))
+    massimo = max(finiti + ([0.0] if da_zero else []))
+    passo = passo_gradevole(massimo - minimo)
+    margine = 0 if da_zero else passo * 0.45
+    fig.update_yaxes(
+        tickmode="linear",
+        tick0=math.floor(minimo / passo) * passo,
+        dtick=passo,
+        range=[minimo - margine, massimo + passo * 0.45],
+    )
+
+
+def stile_asse_x_numerico(fig: go.Figure, valori) -> None:
+    """Su un asse di numeri interi le tacche partono dal primo valore.
+
+    Mesi e giorni cominciano da 1: lasciata scegliere a Plotly, la prima tacca
+    cadeva su 3 e la serie sembrava cominciare a marzo.
+    """
+    finiti = _valori_finiti(valori)
+    if not finiti or any(valore % 1 for valore in finiti):
+        return
+    minimo, massimo = min(finiti), max(finiti)
+    passo = max(1, round(passo_gradevole(massimo - minimo, divisioni=12)))
+    fig.update_xaxes(tickmode="linear", tick0=minimo, dtick=passo)
+
+
+def stile_clima(
+    fig: go.Figure,
+    *,
+    etichette_x: list[str] | None = None,
+    voci_di_legenda: int = 0,
+    titolo_x: bool = False,
+) -> go.Figure:
+    """Lo stile comune, da chiamare per ultimo su ogni figura della scheda."""
+    righe_legenda = math.ceil(voci_di_legenda / 3) if voci_di_legenda else 0
+    sotto = (56 if titolo_x else 34) + 22 * righe_legenda
+    fig.update_layout(
+        height=CLIMATE_HEIGHT,
+        # Il rosso e l'azzurro sono gli stessi delle figure fisse: in una serie
+        # ricavata da una query la temperatura resta rossa e la pioggia azzurra.
+        colorway=[
+            CLIMATE_WARM, CLIMATE_COOL, "#8B5CF6",
+            "#10B981", "#F59E0B", "#EC4899",
+        ],
+        hovermode="x unified",
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        title=dict(x=0, xanchor="left", font=dict(size=17)),
+        margin=dict(l=8, r=8, t=48, b=sotto),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.20 if titolo_x else -0.13,
+            xanchor="left",
+            x=0,
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(size=12),
+        ),
+        bargap=0.22,
+    )
+    fig.update_xaxes(
+        showgrid=False,
+        zeroline=False,
+        showline=False,
+        ticks="",
+        automargin=True,
+        tickfont=dict(size=12),
+        title_font=dict(size=12),
+    )
+    fig.update_yaxes(
+        showgrid=True,
+        gridcolor=CLIMATE_GRID_COLOR,
+        gridwidth=1,
+        zeroline=False,
+        showline=False,
+        ticks="",
+        automargin=True,
+        tickfont=dict(size=12),
+        title_font=dict(size=12),
+    )
+    if etichette_x is not None:
+        # Tutte le etichette, sempre: su un asse di categorie Plotly ne salta
+        # una sì e una no appena il riquadro si stringe.
+        fig.update_xaxes(
+            type="category",
+            categoryorder="array",
+            categoryarray=etichette_x,
+            tickmode="array",
+            tickvals=list(range(len(etichette_x))),
+            ticktext=etichette_x,
+        )
+    return fig
+
+
 def build_era5_annual_temperature_figure(yearly: pd.DataFrame) -> go.Figure:
     media = (yearly["t_media"] * yearly["ore"]).sum() / yearly["ore"].sum()
     fig = go.Figure()
@@ -2143,28 +2309,27 @@ def build_era5_annual_temperature_figure(yearly: pd.DataFrame) -> go.Figure:
         go.Scatter(
             x=yearly["anno"],
             y=yearly["t_media"],
-            mode="lines+markers",
+            mode="lines",
             name="Media annua",
-            line=dict(color="#EF4444", width=2),
+            line=dict(color=CLIMATE_WARM, width=CLIMATE_LINE_WIDTH),
+            fill="tozeroy",
+            fillcolor=hex_to_rgba(CLIMATE_WARM, 0.07),
             hovertemplate="%{x} · %{y:.2f} °C<extra></extra>",
         )
     )
     fig.add_hline(
         y=media,
-        line_dash="dash",
-        line_color="#94A3B8",
+        line_dash="dot",
+        line_width=1.5,
+        line_color="rgba(128, 128, 128, 0.75)",
         annotation_text=f"media del periodo · {media:.2f} °C",
         annotation_position="top left",
+        annotation_font=dict(size=11),
     )
-    fig.update_layout(
-        title="Temperatura media annua",
-        xaxis_title="Anno",
-        yaxis_title="°C",
-        height=400,
-        hovermode="x unified",
-        legend=MOBILE_LEGEND,
-        margin=MOBILE_CHART_MARGIN,
-    )
+    fig.update_layout(title="Temperatura media annua · °C", showlegend=False)
+    stile_clima(fig)
+    stile_asse_y(fig, list(yearly["t_media"]) + [media])
+    stile_asse_x_numerico(fig, yearly["anno"])
     return fig
 
 
@@ -2174,26 +2339,27 @@ def build_era5_annual_precipitation_figure(yearly: pd.DataFrame) -> go.Figure:
         go.Bar(
             x=yearly["anno"],
             y=yearly["prec_mm"],
-            marker_color="#0EA5E9",
+            marker=dict(color=CLIMATE_COOL, cornerradius=3),
             name="Totale annuo",
             hovertemplate="%{x} · %{y:.0f} mm<extra></extra>",
         )
     )
     fig.add_hline(
         y=media,
-        line_dash="dash",
-        line_color="#94A3B8",
+        line_dash="dot",
+        line_width=1.5,
+        line_color="rgba(128, 128, 128, 0.75)",
         annotation_text=f"media del periodo · {media:.0f} mm",
         annotation_position="top left",
+        annotation_font=dict(size=11),
     )
     fig.update_layout(
-        title="Precipitazione annua",
-        xaxis_title="Anno",
-        yaxis_title="mm",
-        height=400,
-        legend=MOBILE_LEGEND,
-        margin=MOBILE_CHART_MARGIN,
+        title="Precipitazione annua · mm",
+        showlegend=False,
     )
+    stile_clima(fig)
+    stile_asse_y(fig, yearly["prec_mm"], da_zero=True)
+    stile_asse_x_numerico(fig, yearly["anno"])
     return fig
 
 
@@ -2229,7 +2395,7 @@ def build_era5_monthly_climatology_figure(monthly: pd.DataFrame) -> go.Figure:
             mode="lines",
             line=dict(width=0),
             fill="tonexty",
-            fillcolor=hex_to_rgba("#EF4444", 0.15),
+            fillcolor=hex_to_rgba(CLIMATE_WARM, 0.13),
             name="Tra l'anno più freddo e il più caldo",
             hoverinfo="skip",
         )
@@ -2238,21 +2404,15 @@ def build_era5_monthly_climatology_figure(monthly: pd.DataFrame) -> go.Figure:
         go.Scatter(
             x=labels,
             y=stats["media"],
-            mode="lines+markers",
-            line=dict(color="#EF4444", width=2),
+            mode="lines",
+            line=dict(color=CLIMATE_WARM, width=CLIMATE_LINE_WIDTH),
             name="Media del mese",
             hovertemplate="%{x} · %{y:.2f} °C<extra></extra>",
         )
     )
-    fig.update_layout(
-        title="Ciclo annuale della temperatura",
-        xaxis_title="Mese",
-        yaxis_title="°C",
-        height=400,
-        hovermode="x unified",
-        legend=MOBILE_LEGEND,
-        margin=MOBILE_CHART_MARGIN,
-    )
+    fig.update_layout(title="Ciclo annuale della temperatura · °C")
+    stile_clima(fig, etichette_x=labels, voci_di_legenda=2)
+    stile_asse_y(fig, list(stats["minimo"]) + list(stats["massimo"]))
     return fig
 
 
@@ -2267,27 +2427,36 @@ def build_era5_decade_profile_figure(monthly: pd.DataFrame) -> go.Figure:
     grouped["t_media"] = grouped["_somma"] / grouped["ore"]
 
     fig = go.Figure()
-    for decennio in sorted(grouped["decennio"].unique()):
+    decenni = sorted(grouped["decennio"].unique())
+    ultimo = len(decenni) - 1
+    for posizione, decennio in enumerate(decenni):
         block = grouped[grouped["decennio"] == decennio]
+        # L'ultimo decennio è quello che si va a guardare: resta pieno, gli
+        # altri arretrano di spessore invece di gareggiare con lui.
+        recente = posizione == ultimo
         fig.add_trace(
             go.Scatter(
                 x=[ITALIAN_MONTHS_SHORT[mese - 1] for mese in block["mese"]],
                 y=block["t_media"],
-                mode="lines+markers",
+                mode="lines",
                 name=f"{decennio}-{str(decennio + 9)[-2:]}",
-                line=dict(color=year_qualitative_color(int(decennio)), width=2),
+                line=dict(
+                    color=climate_decade_color(
+                        posizione / ultimo if ultimo else 1.0
+                    ),
+                    width=CLIMATE_LINE_WIDTH + (0.8 if recente else 0),
+                ),
+                opacity=1.0 if recente else 0.85,
                 hovertemplate="%{x} · %{y:.2f} °C<extra></extra>",
             )
         )
-    fig.update_layout(
-        title="Ciclo annuale per decennio",
-        xaxis_title="Mese",
-        yaxis_title="°C",
-        height=400,
-        hovermode="x unified",
-        legend=MOBILE_LEGEND,
-        margin=MOBILE_CHART_MARGIN,
+    fig.update_layout(title="Ciclo annuale per decennio · °C")
+    stile_clima(
+        fig,
+        etichette_x=list(ITALIAN_MONTHS_SHORT),
+        voci_di_legenda=len(decenni),
     )
+    stile_asse_y(fig, grouped["t_media"])
     return fig
 
 
@@ -2504,7 +2673,8 @@ def era5_figura_risultato(
                 x=frame[colonna_x],
                 y=frame[colonna],
                 name=colonna,
-                mode="lines+markers",
+                mode="lines",
+                line=dict(width=CLIMATE_LINE_WIDTH),
                 hovertemplate="%{x} · %{y}<extra>" + colonna + "</extra>",
             )
         )
@@ -2515,7 +2685,10 @@ def era5_figura_risultato(
                 y=frame[colonna],
                 name=colonna,
                 yaxis="y2" if doppio_asse else "y",
-                marker_color="#0EA5E9" if doppio_asse else None,
+                marker=dict(
+                    color=CLIMATE_COOL if doppio_asse else None,
+                    cornerradius=3,
+                ),
                 opacity=0.65 if doppio_asse else 1.0,
                 hovertemplate="%{x} · %{y}<extra>" + colonna + "</extra>",
             )
@@ -2524,12 +2697,13 @@ def era5_figura_risultato(
     fig.update_layout(
         xaxis_title=colonna_x,
         yaxis_title=colonne_y[0] if len(colonne_y) == 1 else "",
-        height=420,
-        hovermode="x unified",
         barmode="group",
-        legend=MOBILE_LEGEND,
-        margin=MOBILE_CHART_MARGIN,
         showlegend=len(colonne_y) > 1,
+    )
+    stile_clima(
+        fig,
+        voci_di_legenda=len(colonne_y) if len(colonne_y) > 1 else 0,
+        titolo_x=True,
     )
     if doppio_asse:
         fig.update_layout(
@@ -2540,8 +2714,37 @@ def era5_figura_risultato(
                 side="right",
                 showgrid=False,
                 rangemode="tozero",
+                automargin=True,
+                title_font=dict(size=12),
+                tickfont=dict(size=12),
             ),
         )
+        stile_asse_y(fig, pd.concat([frame[c] for c in a_linee]))
+    else:
+        stile_asse_y(
+            fig,
+            pd.concat([frame[c] for c in colonne_y]),
+            da_zero=bool(a_barre),
+        )
+
+    # Le tacche dell'asse X: un mese porta il suo nome, e ogni altra serie di
+    # numeri interi comincia dal primo valore invece che dalla tacca che capita.
+    valori_x = pd.to_numeric(frame[colonna_x], errors="coerce").dropna()
+    mesi = (
+        re.fullmatch(r"mes[ei]|month", colonna_x, re.I)
+        and not valori_x.empty
+        and valori_x.between(1, 12).all()
+        and not (valori_x % 1).any()
+    )
+    if mesi:
+        presenti = sorted({int(v) for v in valori_x})
+        fig.update_xaxes(
+            tickmode="array",
+            tickvals=presenti,
+            ticktext=[ITALIAN_MONTHS_SHORT[mese - 1] for mese in presenti],
+        )
+    else:
+        stile_asse_x_numerico(fig, frame[colonna_x])
     return fig
 
 
