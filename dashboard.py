@@ -2653,8 +2653,8 @@ ERA5_COLONNE_A_BARRE = re.compile(r"pioggia|prec|_mm$|mm$", re.IGNORECASE)
 def era5_e_una_serie(valori: pd.Series) -> bool:
     """Dice se le righe procedono lungo l'asse orizzontale.
 
-    Sei ricette su trenta sono una **classifica** — `ORDER BY media DESC LIMIT
-    15` — e restituiscono gli anni in ordine di temperatura: 1950, 1994, 1983,
+    Sei ricette della libreria sono una **classifica** — `ORDER BY media DESC
+    LIMIT 15` — e restituiscono gli anni in ordine di temperatura: 1950, 1994, 1983,
     1952… Unirli con una linea disegna segmenti fra anni che nel tempo non si
     toccano e fa sparire in silenzio i cinquanta anni rimasti fuori dalla
     classifica: il grafico che ne esce non si legge, e quel poco che si legge

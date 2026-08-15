@@ -190,6 +190,112 @@ FROM giorni
 WHERE CAST(strftime('%Y', giorno) AS INTEGER) = :anno
   AND tmin >= :soglia""",
     },
+    # --- gli stessi conteggi, ma anno per anno su tutto l'archivio ----------
+    # Sei ricette e non una con la colonna a scelta: il modello riempie
+    # valori, mai frammenti di SQL, quindi né la colonna (`tmax`/`tmin`/
+    # `tmedia`) né il verso del confronto possono essere parametri. Scegliere
+    # fra sei titoli espliciti è per lui più facile che comporre la query
+    # giusta, ed è il motivo per cui questo file esiste.
+    #
+    # Il conteggio sta in FILTER e non in WHERE per la ragione già vista sui
+    # decenni: filtrando prima del raggruppamento, un anno senza nemmeno un
+    # giorno oltre soglia sparirebbe invece di valere zero — e in una serie
+    # nel tempo un anno mancante si legge come una linea che salta, cioè come
+    # un dato che non c'è, non come lo zero che è.
+    #
+    # Solo anni completi: l'ultimo anno dell'archivio è tronco finché lo
+    # scaricamento non l'ha finito, e un conteggio su mezzo anno crolla senza
+    # dirlo, che su una serie di conteggi è il difetto peggiore possibile.
+    {
+        "id": "giorni_massima_sopra_per_anno",
+        "titolo": "Giorni con massima ≥ soglia, anno per anno",
+        "esempio": "Come cambiano negli anni i giorni con massima ≥ 30 °C?",
+        "parametri": [_soglia("Soglia della massima (°C)", 30.0)],
+        "sql": f"""{DAILY_CTE},
+{COMPLETE_YEARS_CTE}
+SELECT CAST(strftime('%Y', giorno) AS INTEGER) AS anno,
+       COUNT(*) FILTER (WHERE tmax >= :soglia) AS giorni
+FROM giorni
+WHERE CAST(strftime('%Y', giorno) AS INTEGER)
+      IN (SELECT anno FROM anni_completi)
+GROUP BY anno
+ORDER BY anno""",
+    },
+    {
+        "id": "giorni_massima_sotto_per_anno",
+        "titolo": "Giorni con massima ≤ soglia (di ghiaccio), anno per anno",
+        "esempio": "Quanti giorni di ghiaccio, con la massima sotto zero, ogni anno?",
+        "parametri": [_soglia("Soglia della massima (°C)", 0.0)],
+        "sql": f"""{DAILY_CTE},
+{COMPLETE_YEARS_CTE}
+SELECT CAST(strftime('%Y', giorno) AS INTEGER) AS anno,
+       COUNT(*) FILTER (WHERE tmax <= :soglia) AS giorni
+FROM giorni
+WHERE CAST(strftime('%Y', giorno) AS INTEGER)
+      IN (SELECT anno FROM anni_completi)
+GROUP BY anno
+ORDER BY anno""",
+    },
+    {
+        "id": "giorni_minima_sopra_per_anno",
+        "titolo": "Notti con minima ≥ soglia (tropicali), anno per anno",
+        "esempio": "Le notti tropicali sono aumentate nel tempo?",
+        "parametri": [_soglia("Soglia della minima (°C)", 20.0)],
+        "sql": f"""{DAILY_CTE},
+{COMPLETE_YEARS_CTE}
+SELECT CAST(strftime('%Y', giorno) AS INTEGER) AS anno,
+       COUNT(*) FILTER (WHERE tmin >= :soglia) AS notti
+FROM giorni
+WHERE CAST(strftime('%Y', giorno) AS INTEGER)
+      IN (SELECT anno FROM anni_completi)
+GROUP BY anno
+ORDER BY anno""",
+    },
+    {
+        "id": "giorni_minima_sotto_per_anno",
+        "titolo": "Giorni con minima ≤ soglia (gelo), anno per anno",
+        "esempio": "I giorni di gelo sono diminuiti dal 1950 a oggi?",
+        "parametri": [_soglia("Soglia della minima (°C)", 0.0)],
+        "sql": f"""{DAILY_CTE},
+{COMPLETE_YEARS_CTE}
+SELECT CAST(strftime('%Y', giorno) AS INTEGER) AS anno,
+       COUNT(*) FILTER (WHERE tmin <= :soglia) AS giorni
+FROM giorni
+WHERE CAST(strftime('%Y', giorno) AS INTEGER)
+      IN (SELECT anno FROM anni_completi)
+GROUP BY anno
+ORDER BY anno""",
+    },
+    {
+        "id": "giorni_media_sopra_per_anno",
+        "titolo": "Giorni con media giornaliera ≥ soglia, anno per anno",
+        "esempio": "Quanti giorni all'anno hanno una media di almeno 25 °C?",
+        "parametri": [_soglia("Soglia della media (°C)", 25.0)],
+        "sql": f"""{DAILY_CTE},
+{COMPLETE_YEARS_CTE}
+SELECT CAST(strftime('%Y', giorno) AS INTEGER) AS anno,
+       COUNT(*) FILTER (WHERE tmedia >= :soglia) AS giorni
+FROM giorni
+WHERE CAST(strftime('%Y', giorno) AS INTEGER)
+      IN (SELECT anno FROM anni_completi)
+GROUP BY anno
+ORDER BY anno""",
+    },
+    {
+        "id": "giorni_media_sotto_per_anno",
+        "titolo": "Giorni con media giornaliera ≤ soglia, anno per anno",
+        "esempio": "Quanti giorni all'anno restano in media sotto zero?",
+        "parametri": [_soglia("Soglia della media (°C)", 0.0)],
+        "sql": f"""{DAILY_CTE},
+{COMPLETE_YEARS_CTE}
+SELECT CAST(strftime('%Y', giorno) AS INTEGER) AS anno,
+       COUNT(*) FILTER (WHERE tmedia <= :soglia) AS giorni
+FROM giorni
+WHERE CAST(strftime('%Y', giorno) AS INTEGER)
+      IN (SELECT anno FROM anni_completi)
+GROUP BY anno
+ORDER BY anno""",
+    },
     # --- temperatura: medie -------------------------------------------------
     {
         "id": "media_massime_mese",

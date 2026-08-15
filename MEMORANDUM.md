@@ -15,6 +15,42 @@ portava già il suo motivo, la voce lo dice.
 
 ---
 
+## 2026-08-15 — i giorni oltre soglia contati anno per anno, in sei ricette
+
+La libreria contava i giorni oltre una soglia **dentro un anno** o **per
+decennio**: mancava la forma che serve per vedere lo spostamento, cioè un
+conteggio per ogni anno dell'archivio. Sei ricette nuove — massima, minima,
+media giornaliera, ciascuna sopra e sotto soglia.
+
+**Sei e non una con la colonna a scelta.** Il patto di questo file è che il
+modello riempie *valori*, mai frammenti di SQL: né `tmax`/`tmin`/`tmedia` né il
+verso del confronto possono essere parametri legati. Scartata anche la via di
+mezzo — un parametro `verso` con un `CASE` dentro il `FILTER` — perché
+complica la query per risparmiare cinque voci in un elenco che il modello
+legge, e leggere sei titoli espliciti è proprio il compito facile che lo fa
+sbagliare meno.
+
+**Il conteggio in `FILTER`, non in `WHERE`.** Stessa ragione già scritta per i
+decenni, ma qui pesa di più: filtrando prima del raggruppamento un anno senza
+nemmeno un giorno oltre soglia sparirebbe dal risultato, e in una serie nel
+tempo un anno mancante non si legge come lo zero che è — si legge come un dato
+che non c'è. Il caso è reale e non teorico: con la soglia a 30 °C il **1951 vale
+zero**, perché la massima oraria di tutto l'anno è 29,8 °C.
+
+**Quel 1951 non è un guasto ed è un promemoria su cosa sono questi numeri.**
+ERA5-Land è una media su una cella di 9 km: gli estremi sono smorzati, e le
+massime di questa serie stanno sotto quelle che avrebbe misurato un termometro
+in loco. Le soglie classiche (30 °C, 0 °C, notti tropicali a 20 °C) restano
+utili per **confrontare un anno con l'altro**, che è ciò a cui servono queste
+ricette, non per dire quanti giorni sopra i 30 ha fatto davvero a Mogliano.
+
+**Solo anni completi**, con `COMPLETE_YEARS_CTE` già in uso per le medie: un
+conteggio su un anno tronco crolla senza dirlo, e su una serie di conteggi il
+crollo finale si legge come un fatto climatico. Costo misurato: **0,2-0,4 s** a
+query sull'archivio attuale, ben dentro il limite dei 15 secondi.
+
+---
+
 ## 2026-08-15 — una classifica non è una serie: il grafico lo riconosce dalle righe
 
 `Lo stesso mese confrontato in tutti gli anni` disegnava un intrico
@@ -33,7 +69,7 @@ ordinato per valore e non una serie nel tempo: asse di categorie nell'ordine
 del risultato e niente linee. Scartato l'etichettare a mano le ricette come
 "classifica": sarebbe stato un campo in più da ricordare per ognuna delle
 trenta, e soprattutto non avrebbe coperto l'SQL libero, dove la classifica la
-scrive chi guarda. Delle trenta ricette ne cadono in questo caso **sei**
+scrive chi guarda. Delle ricette della libreria ne cadono in questo caso **sei**
 (`stesso_mese_tra_anni`, `anni_piu_caldi`, `anni_piu_freddi`,
 `giorni_piu_caldi`, `giorni_piu_freddi`, `giorni_piu_piovosi`), e infatti il
 difetto era stato notato su più di una query.

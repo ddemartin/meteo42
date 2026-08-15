@@ -247,6 +247,11 @@ osservazioni — sta in [MEMORANDUM.md](MEMORANDUM.md) (2026-08-07).
   lo scaricamento — che dura giorni — l'ultimo anno è tronco, e una media
   calcolata su mezzo anno sarebbe falsa senza sembrarlo. I mesi ancora
   incompleti sono elencati sotto le tessere
+- Nella libreria ci sono anche i **giorni oltre una soglia contati anno per
+  anno** — massima, minima o media giornaliera, sopra o sotto la soglia: sei
+  ricette che mostrano come si sposta il clima invece di fotografare un anno
+  solo. Contano solo gli anni completi, e un anno senza nemmeno un giorno oltre
+  soglia vale zero invece di sparire dalla serie
 - **Interroga i dati**, in tre modi:
   - *Chiedi in italiano* — il modello Ollama locale **sceglie** una delle
     ricette pronte di `era5_queries.py` e ne riempie i parametri, che restano
