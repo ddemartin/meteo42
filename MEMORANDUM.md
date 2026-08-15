@@ -15,6 +15,46 @@ portava già il suo motivo, la voce lo dice.
 
 ---
 
+## 2026-08-15 — una classifica non è una serie: il grafico lo riconosce dalle righe
+
+`Lo stesso mese confrontato in tutti gli anni` disegnava un intrico
+illeggibile: quattro segmenti che scendevano da sinistra a destra
+attraversandosi, senza che nessuno dei due assi dicesse più niente. La query
+finisce con `ORDER BY media DESC LIMIT 15`, quindi le righe arrivano
+**1950, 1994, 1983, 1952, 1995…**: unendole con una linea si tracciavano
+segmenti fra anni che nel tempo non si toccano, e i sessant'anni rimasti fuori
+dalla classifica sparivano senza dirlo. Non era un difetto di stile ma un
+grafico **falso**: la pendenza di quei segmenti si legge come un andamento, e
+lì dentro di andamento non ce n'è.
+
+**Il criterio è la monotonia dell'asse X, non il testo dell'SQL.** Se i valori
+di X non salgono (o scendono) riga dopo riga, il risultato è un elenco
+ordinato per valore e non una serie nel tempo: asse di categorie nell'ordine
+del risultato e niente linee. Scartato l'etichettare a mano le ricette come
+"classifica": sarebbe stato un campo in più da ricordare per ognuna delle
+trenta, e soprattutto non avrebbe coperto l'SQL libero, dove la classifica la
+scrive chi guarda. Delle trenta ricette ne cadono in questo caso **sei**
+(`stesso_mese_tra_anni`, `anni_piu_caldi`, `anni_piu_freddi`,
+`giorni_piu_caldi`, `giorni_piu_freddi`, `giorni_piu_piovosi`), e infatti il
+difetto era stato notato su più di una query.
+
+**Punti per i gradi, barre solo per ciò che ha uno zero vero.** Prima cura
+scritta e subito corretta: mettere *tutto* a barre. Una barra dice "quanto", e
+0 °C non è un'assenza di temperatura ma una convenzione — la classifica dei
+luglio sta fra 23 e 26 °C, e da zero sarebbero state quindici barre tutte
+uguali, cioè un altro modo di non far vedere il dato. I millimetri, che uno
+zero vero ce l'hanno, restano barre da zero sull'asse destro.
+
+**Il titolo dei grafici diceva `undefined`.** `stile_clima` impostava
+`title=dict(x=…, font=…)` senza `text`: le figure fisse lo scrivevano da sé e
+il difetto non si vedeva, quella dei risultati di query no, e plotly.js
+stampava la stringa `undefined` in grassetto dove sarebbe andato il titolo.
+Ora `text` viene ripetuto sempre, vuoto quando non c'è. Non è un caso che sia
+saltato fuori con l'unica figura senza titolo: un default assente si vede solo
+dove nessuno lo copre.
+
+---
+
 ## 2026-08-13 — la cella ERA5-Land è tutta terraferma: misurato, non dedotto
 
 La domanda era legittima e non aveva ancora una risposta: la cella

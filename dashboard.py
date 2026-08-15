@@ -2255,7 +2255,15 @@ def stile_clima(
         hovermode="x unified",
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        title=dict(x=0, xanchor="left", font=dict(size=17)),
+        # `text` va ripetuto anche quando è vuoto: un `title` senza testo
+        # arriva a plotly.js come `undefined`, e lì viene scritto sul grafico
+        # per esteso, in grassetto, dove starebbe il titolo.
+        title=dict(
+            text=fig.layout.title.text or "",
+            x=0,
+            xanchor="left",
+            font=dict(size=17),
+        ),
         margin=dict(l=8, r=8, t=48, b=sotto),
         legend=dict(
             orientation="h",
@@ -2642,6 +2650,28 @@ def era5_run_query(
 ERA5_COLONNE_A_BARRE = re.compile(r"pioggia|prec|_mm$|mm$", re.IGNORECASE)
 
 
+def era5_e_una_serie(valori: pd.Series) -> bool:
+    """Dice se le righe procedono lungo l'asse orizzontale.
+
+    Sei ricette su trenta sono una **classifica** — `ORDER BY media DESC LIMIT
+    15` — e restituiscono gli anni in ordine di temperatura: 1950, 1994, 1983,
+    1952… Unirli con una linea disegna segmenti fra anni che nel tempo non si
+    toccano e fa sparire in silenzio i cinquanta anni rimasti fuori dalla
+    classifica: il grafico che ne esce non si legge, e quel poco che si legge
+    è falso. Una classifica non è una serie, è un elenco ordinato, e si guarda
+    nell'ordine in cui è arrivata.
+
+    Il criterio è la monotonia dell'asse X e non il testo dell'SQL: vale anche
+    per una query scritta a mano nella casella dell'SQL libero.
+    """
+    puliti = valori.dropna()
+    if len(puliti) < 3:
+        return True
+    return bool(
+        puliti.is_monotonic_increasing or puliti.is_monotonic_decreasing
+    )
+
+
 def era5_figura_risultato(
     frame: pd.DataFrame,
     colonna_x: str,
@@ -2658,38 +2688,55 @@ def era5_figura_risultato(
     meteogramma di sempre, e qui viene da sé perché i due gruppi si
     riconoscono dal nome della colonna.
     """
-    a_barre = [c for c in colonne_y if ERA5_COLONNE_A_BARRE.search(c)]
-    a_linee = [c for c in colonne_y if c not in a_barre]
-    doppio_asse = bool(a_barre) and bool(a_linee)
-    if not doppio_asse:
+    colonne_mm = [c for c in colonne_y if ERA5_COLONNE_A_BARRE.search(c)]
+    colonne_altre = [c for c in colonne_y if c not in colonne_mm]
+    doppio_asse = bool(colonne_mm) and bool(colonne_altre)
+    classifica = not era5_e_una_serie(frame[colonna_x])
+    if classifica or doppio_asse:
+        # Due casi, stessa divisione delle colonne. Con due unità: pioggia a
+        # barre a destra, temperature a linee a sinistra. In una classifica:
+        # l'ordine delle righe non è quello dell'asse, quindi niente linee —
+        # i gradi diventano punti su un asse di categorie — e restano a barre
+        # solo le colonne con uno zero vero, i millimetri. Una barra dice
+        # "quanto", e 0 °C non è un'assenza di temperatura ma una convenzione:
+        # da zero, una classifica di luglio fra 23 e 26 °C sarebbe una fila di
+        # barre tutte uguali.
+        a_barre, a_linee = colonne_mm, colonne_altre
+    else:
         # Un gruppo solo: comanda la scelta di chi guarda.
         a_barre = colonne_y if tipo == "Barre" else []
         a_linee = [] if tipo == "Barre" else colonne_y
+
+    valori_x = frame[colonna_x].astype(str) if classifica else frame[colonna_x]
 
     fig = go.Figure()
     for colonna in a_linee:
         fig.add_trace(
             go.Scatter(
-                x=frame[colonna_x],
+                x=valori_x,
                 y=frame[colonna],
                 name=colonna,
-                mode="lines",
+                mode="markers" if classifica else "lines",
+                marker=dict(size=9),
                 line=dict(width=CLIMATE_LINE_WIDTH),
                 hovertemplate="%{x} · %{y}<extra>" + colonna + "</extra>",
             )
         )
     for colonna in a_barre:
+        # A destra ci va la pioggia, e solo lei: in una classifica anche le
+        # temperature sono barre, ma restano gradi sull'asse di sinistra.
+        a_destra = doppio_asse and colonna in colonne_mm
         fig.add_trace(
             go.Bar(
-                x=frame[colonna_x],
+                x=valori_x,
                 y=frame[colonna],
                 name=colonna,
-                yaxis="y2" if doppio_asse else "y",
+                yaxis="y2" if a_destra else "y",
                 marker=dict(
-                    color=CLIMATE_COOL if doppio_asse else None,
+                    color=CLIMATE_COOL if a_destra else None,
                     cornerradius=3,
                 ),
-                opacity=0.65 if doppio_asse else 1.0,
+                opacity=0.65 if a_destra else 1.0,
                 hovertemplate="%{x} · %{y}<extra>" + colonna + "</extra>",
             )
         )
@@ -2702,6 +2749,7 @@ def era5_figura_risultato(
     )
     stile_clima(
         fig,
+        etichette_x=list(valori_x) if classifica else None,
         voci_di_legenda=len(colonne_y) if len(colonne_y) > 1 else 0,
         titolo_x=True,
     )
@@ -2719,7 +2767,7 @@ def era5_figura_risultato(
                 tickfont=dict(size=12),
             ),
         )
-        stile_asse_y(fig, pd.concat([frame[c] for c in a_linee]))
+        stile_asse_y(fig, pd.concat([frame[c] for c in colonne_altre]))
     else:
         stile_asse_y(
             fig,
@@ -2727,17 +2775,22 @@ def era5_figura_risultato(
             da_zero=bool(a_barre),
         )
 
+    if classifica:
+        # L'asse è di categorie: non ha tacche da scegliere né mesi da
+        # tradurre, e le etichette le ha già messe `stile_clima`.
+        return fig
+
     # Le tacche dell'asse X: un mese porta il suo nome, e ogni altra serie di
     # numeri interi comincia dal primo valore invece che dalla tacca che capita.
-    valori_x = pd.to_numeric(frame[colonna_x], errors="coerce").dropna()
+    numeri_x = pd.to_numeric(frame[colonna_x], errors="coerce").dropna()
     mesi = (
         re.fullmatch(r"mes[ei]|month", colonna_x, re.I)
-        and not valori_x.empty
-        and valori_x.between(1, 12).all()
-        and not (valori_x % 1).any()
+        and not numeri_x.empty
+        and numeri_x.between(1, 12).all()
+        and not (numeri_x % 1).any()
     )
     if mesi:
-        presenti = sorted({int(v) for v in valori_x})
+        presenti = sorted({int(v) for v in numeri_x})
         fig.update_xaxes(
             tickmode="array",
             tickvals=presenti,
@@ -5562,7 +5615,23 @@ with tab_climate:
                             st.session_state.setdefault(
                                 chiave_tipo, tipo_default
                             )
-                            if gruppi_misti:
+                            # Una classifica (`ORDER BY media DESC LIMIT 15`)
+                            # non ha un asse orizzontale su cui procedere: la
+                            # scelta non si applica, e dirlo evita di lasciare
+                            # acceso un "Linee" che il grafico ignora.
+                            classifica = not era5_e_una_serie(
+                                risultato[colonna_x]
+                            )
+                            if classifica:
+                                tipo = tipo_default
+                                st.caption(
+                                    f"Le righe non sono in ordine di "
+                                    f"«{colonna_x}»: è una classifica, non un "
+                                    "andamento. Restano nell'ordine del "
+                                    "risultato, senza linee che uniscano "
+                                    "valori lontani nel tempo."
+                                )
+                            elif gruppi_misti:
                                 # La scelta linee/barre non si applica: qui
                                 # comanda l'unità di misura, non il gusto.
                                 tipo = tipo_default
