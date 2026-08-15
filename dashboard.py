@@ -2116,6 +2116,70 @@ def get_era5_monthly() -> pd.DataFrame:
     return frame
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def era5_media_ultimi_365_giorni() -> tuple[float, str] | None:
+    """La media delle ultime 8.760 ore di archivio, con la data di fine.
+
+    Non passa dagli anni completi come tutto il resto della scheda, e non è una
+    contraddizione: la finestra è **lunga un anno per costruzione**, quindi
+    contiene ogni stagione una volta sola e non ha lo squilibrio stagionale che
+    rende falsa la media di un anno solare tronco. È l'unico modo di dire
+    «com'è andato l'ultimo anno di dati» finché l'anno solare in corso non è
+    finito.
+    """
+    if not ERA5_DATABASE_PATH.exists():
+        return None
+    conn = era5_connect_readonly()
+    try:
+        riga = conn.execute(
+            """
+            SELECT AVG(temperature_c) AS media,
+                   -- Il secondo tolto è l'ora di chiusura: l'ultimo record
+                   -- copre l'ora che comincia allora, e in ora locale quella
+                   -- del 31 dicembre 23:00 UTC comincia il 1° gennaio. Senza,
+                   -- la finestra si direbbe chiusa in un anno di cui non c'è
+                   -- nemmeno un giorno.
+                   date(MAX(valid_at_utc) + :offset - 1, 'unixepoch') AS fine,
+                   COUNT(*) AS ore
+            FROM weather_hourly
+            WHERE valid_at_utc >
+                  (SELECT MAX(valid_at_utc) FROM weather_hourly) - 365 * 86400
+            """,
+            {"offset": ERA5_LOCAL_OFFSET_SECONDS},
+        ).fetchone()
+    finally:
+        conn.close()
+    # Meno di un anno di dati: la finestra non è più lunga un anno e la media
+    # varrebbe la stagione che ci è finita dentro, non il clima.
+    if riga is None or riga["media"] is None or riga["ore"] < 8000:
+        return None
+    return float(riga["media"]), str(riga["fine"])
+
+
+def era5_medie_per_decennio(yearly: pd.DataFrame) -> pd.DataFrame:
+    """Una media per decennio, pesata sulle ore come quella annua.
+
+    La media delle medie annue non sarebbe la stessa cosa: gli anni bisestili
+    pesano un giorno in più, e un decennio tronco — il primo e l'ultimo
+    dell'archivio — è fatto di meno anni. Il conteggio degli anni resta nella
+    tabella perché è ciò che dice quanto ci si può fidare dello scalino.
+    """
+    if yearly.empty:
+        return pd.DataFrame()
+    decenni = yearly.assign(
+        decennio=(yearly["anno"] // 10) * 10,
+        _somma=yearly["t_media"] * yearly["ore"],
+    ).groupby("decennio", as_index=False).agg(
+        _somma=("_somma", "sum"),
+        ore=("ore", "sum"),
+        anni=("anno", "count"),
+        primo=("anno", "min"),
+        ultimo=("anno", "max"),
+    )
+    decenni["t_media"] = decenni["_somma"] / decenni["ore"]
+    return decenni.drop(columns=["_somma"])
+
+
 def era5_yearly_from_monthly(monthly: pd.DataFrame) -> pd.DataFrame:
     """Aggregati annui sui soli anni con dodici mesi completi."""
     if monthly.empty:
@@ -2310,7 +2374,19 @@ def stile_clima(
     return fig
 
 
-def build_era5_annual_temperature_figure(yearly: pd.DataFrame) -> go.Figure:
+def build_era5_annual_temperature_figure(
+    yearly: pd.DataFrame,
+    *,
+    decenni: bool = False,
+    ultimi_365: tuple[float, str] | None = None,
+) -> go.Figure:
+    """La spezzata delle medie annue, con due strati che si accendono a parte.
+
+    Spenti di default e non sempre presenti: il grafico di base risponde a una
+    domanda sola — come sono andati gli anni — e chi vuole il confronto coi
+    decenni o con l'ultimo anno di dati lo chiede. Tre linee sempre accese
+    sarebbero tre linee da scartare ogni volta che se ne guarda una.
+    """
     media = (yearly["t_media"] * yearly["ore"]).sum() / yearly["ore"].sum()
     fig = go.Figure()
     fig.add_trace(
@@ -2334,9 +2410,58 @@ def build_era5_annual_temperature_figure(yearly: pd.DataFrame) -> go.Figure:
         annotation_position="top left",
         annotation_font=dict(size=11),
     )
-    fig.update_layout(title="Temperatura media annua · °C", showlegend=False)
-    stile_clima(fig)
-    stile_asse_y(fig, list(yearly["t_media"]) + [media])
+
+    valori_y = list(yearly["t_media"]) + [media]
+    voci = 0
+    if decenni:
+        tabella = era5_medie_per_decennio(yearly)
+        # `hv`: la media resta piatta per tutto il decennio e salta di netto a
+        # quello dopo. È il disegno che dice la cosa vera — dentro il decennio
+        # non c'è nessun andamento, c'è un unico numero — mentre unendo i
+        # centri dei decenni con una retta si vedrebbe una pendenza inventata.
+        passi_x = list(tabella["primo"]) + [yearly["anno"].max()]
+        passi_y = list(tabella["t_media"]) + [tabella["t_media"].iloc[-1]]
+        etichette = [
+            f"{int(riga['primo'])}-{int(riga['ultimo'])} · {int(riga['anni'])} anni"
+            for _, riga in tabella.iterrows()
+        ]
+        fig.add_trace(
+            go.Scatter(
+                x=passi_x,
+                y=passi_y,
+                mode="lines",
+                name="Media del decennio",
+                line=dict(
+                    color="rgba(30, 41, 59, 0.85)",
+                    width=1.8,
+                    shape="hv",
+                ),
+                customdata=etichette + [etichette[-1]],
+                hovertemplate="%{customdata} · %{y:.2f} °C<extra></extra>",
+            )
+        )
+        valori_y += list(tabella["t_media"])
+        voci += 1
+
+    if ultimi_365 is not None:
+        valore, fine = ultimi_365
+        fig.add_hline(
+            y=valore,
+            line_dash="dash",
+            line_width=1.5,
+            line_color=CLIMATE_WARM,
+            annotation_text=f"ultimi 365 giorni · {valore:.2f} °C",
+            annotation_position="bottom right",
+            annotation_font=dict(size=11, color=CLIMATE_WARM),
+            annotation_hovertext=f"365 giorni fino al {fine}",
+        )
+        valori_y.append(valore)
+
+    fig.update_layout(
+        title="Temperatura media annua · °C", showlegend=bool(voci)
+    )
+    stile_clima(fig, voci_di_legenda=voci + 1 if voci else 0)
+    stile_asse_y(fig, valori_y)
     stile_asse_x_numerico(fig, yearly["anno"])
     return fig
 
@@ -5158,7 +5283,41 @@ with tab_climate:
                 )
             else:
                 st.write("### Andamento annuale")
-                render_chart(build_era5_annual_temperature_figure(yearly_era5))
+                # Due strati facoltativi sulla sola figura delle temperature:
+                # spenti di default, perché il grafico di base risponde già a
+                # una domanda sua e non deve pagare il prezzo di chi ne ha
+                # un'altra.
+                sovrapp_1, sovrapp_2 = st.columns(2)
+                with sovrapp_1:
+                    mostra_decenni = st.checkbox(
+                        "📐 Medie per decennio",
+                        key="era5_annuale_decenni",
+                    )
+                with sovrapp_2:
+                    ultimi_365 = era5_media_ultimi_365_giorni()
+                    mostra_365 = (
+                        st.checkbox(
+                            "🗓️ Media degli ultimi 365 giorni",
+                            key="era5_annuale_365",
+                            help=(
+                                f"365 giorni fino al {ultimi_365[1]}: una "
+                                "finestra lunga un anno, quindi confrontabile "
+                                "con le medie annue anche se non coincide con "
+                                "un anno solare."
+                            )
+                            if ultimi_365
+                            else None,
+                            disabled=ultimi_365 is None,
+                        )
+                        and ultimi_365 is not None
+                    )
+                render_chart(
+                    build_era5_annual_temperature_figure(
+                        yearly_era5,
+                        decenni=mostra_decenni,
+                        ultimi_365=ultimi_365 if mostra_365 else None,
+                    )
+                )
                 render_chart(build_era5_annual_precipitation_figure(yearly_era5))
 
                 st.write("### Ciclo annuale")

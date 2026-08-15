@@ -15,6 +15,41 @@ portava già il suo motivo, la voce lo dice.
 
 ---
 
+## 2026-08-15 — due strati facoltativi sull'andamento annuale, e la finestra mobile che vale quanto un anno solare
+
+Sull'andamento annuale si accendono a casella — **spente di default** — le
+medie per decennio e la media degli ultimi 365 giorni. Il criterio della
+casella è che il grafico di base risponde a una domanda sola: tre linee sempre
+accese sarebbero due linee da scartare ogni volta che se ne guarda una.
+
+**I decenni a scalini (`shape="hv"`), non uniti fra i centri.** Dentro un
+decennio non c'è nessun andamento, c'è un unico numero: la spezzata che
+congiunge i centri dei decenni disegnerebbe una pendenza che nei dati non
+esiste, e in mezzo a una serie annua vera sarebbe indistinguibile da un
+andamento misurato. Lo scalino, che salta di netto al cambio di decennio, dice
+esattamente ciò che il numero è.
+
+**La media dei decenni è pesata sulle ore**, non è la media delle medie annue:
+i bisestili portano un giorno in più e i decenni di bordo sono fatti di meno
+anni — il 1990 ne ha sei, e l'hover lo dice invece di lasciarlo credere pieno.
+
+**La finestra di 365 giorni è l'unica media della scheda che non passa dagli
+anni completi, e non contraddice la regola del 2026-08-10 — la conferma.** Quel
+divieto esiste perché un anno solare tronco ha dentro solo certe stagioni, e
+mediarci sopra dà un numero che parla del pezzo di calendario, non del clima.
+Una finestra **lunga un anno per costruzione** contiene ogni stagione una volta
+sola: lo squilibrio che rendeva falsa l'altra media qui non c'è. Sotto le 8.000
+ore la funzione non restituisce niente e la casella resta disabilitata, perché
+lì la finestra tornerebbe a essere una stagione.
+
+**Un secondo tolto alla data di fine.** L'ultimo record copre l'ora che
+comincia alle 23:00 UTC del 31 dicembre, che in ora locale è il 1° gennaio: la
+finestra si sarebbe detta chiusa in un anno di cui non esiste nemmeno un
+giorno. È lo stesso spostamento di UTC+1 già annotato il 2026-08-10, che
+ricompare ogni volta che si stampa un estremo dell'archivio.
+
+---
+
 ## 2026-08-15 — i giorni oltre soglia contati anno per anno, in sei ricette
 
 La libreria contava i giorni oltre una soglia **dentro un anno** o **per
