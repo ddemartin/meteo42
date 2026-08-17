@@ -2180,6 +2180,42 @@ def era5_medie_per_decennio(yearly: pd.DataFrame) -> pd.DataFrame:
     return decenni.drop(columns=["_somma"])
 
 
+ERA5_ANNI_MINIMI_TENDENZA = 10
+
+
+def era5_tendenza_lineare(yearly: pd.DataFrame) -> dict | None:
+    """La retta dei minimi quadrati sulle medie annue, o niente.
+
+    Non è pesata sulle ore come la media del periodo e quelle per decennio: lì
+    il peso serve perché si sommano ore disuguali dentro un unico numero, qui
+    ogni punto è **un anno completo** e vale quanto gli altri — il giorno in
+    più dei bisestili sposterebbe la pendenza di molto meno di quanto la
+    sposta un anno caldo qualsiasi.
+
+    Sotto i dieci anni non restituisce niente: su una serie corta la retta
+    misura soprattutto quale anno è capitato agli estremi.
+    """
+    if len(yearly) < ERA5_ANNI_MINIMI_TENDENZA:
+        return None
+    anni = yearly["anno"].to_numpy(dtype=float)
+    valori = yearly["t_media"].to_numpy(dtype=float)
+    pendenza, quota = np.polyfit(anni, valori, 1)
+    attesi = pendenza * anni + quota
+    scarto = float(((valori - attesi) ** 2).sum())
+    varianza = float(((valori - valori.mean()) ** 2).sum())
+    return {
+        "x": anni,
+        "y": attesi,
+        # Per decennio e non per anno: al secolo la pendenza sembra enorme,
+        # all'anno è un numero di centesimi che non si legge. Il decennio è
+        # anche il passo con cui la scheda confronta il resto.
+        "per_decennio": float(pendenza) * 10,
+        "r2": 1 - scarto / varianza if varianza else 0.0,
+        "primo": int(anni[0]),
+        "ultimo": int(anni[-1]),
+    }
+
+
 def era5_yearly_from_monthly(monthly: pd.DataFrame) -> pd.DataFrame:
     """Aggregati annui sui soli anni con dodici mesi completi."""
     if monthly.empty:
@@ -2378,14 +2414,16 @@ def build_era5_annual_temperature_figure(
     yearly: pd.DataFrame,
     *,
     decenni: bool = False,
+    tendenza: bool = False,
     ultimi_365: tuple[float, str] | None = None,
 ) -> go.Figure:
-    """La spezzata delle medie annue, con due strati che si accendono a parte.
+    """La spezzata delle medie annue, con tre strati che si accendono a parte.
 
     Spenti di default e non sempre presenti: il grafico di base risponde a una
     domanda sola — come sono andati gli anni — e chi vuole il confronto coi
-    decenni o con l'ultimo anno di dati lo chiede. Tre linee sempre accese
-    sarebbero tre linee da scartare ogni volta che se ne guarda una.
+    decenni, la retta di tendenza o l'ultimo anno di dati lo chiede. Tre linee
+    sempre accese sarebbero tre linee da scartare ogni volta che se ne guarda
+    una.
     """
     media = (yearly["t_media"] * yearly["ore"]).sum() / yearly["ore"].sum()
     fig = go.Figure()
@@ -2442,6 +2480,27 @@ def build_era5_annual_temperature_figure(
         )
         valori_y += list(tabella["t_media"])
         voci += 1
+
+    if tendenza:
+        retta = era5_tendenza_lineare(yearly)
+        if retta is not None:
+            segno = "+" if retta["per_decennio"] >= 0 else "−"
+            passo = abs(retta["per_decennio"])
+            fig.add_trace(
+                go.Scatter(
+                    x=retta["x"],
+                    y=retta["y"],
+                    mode="lines",
+                    name=f"Tendenza · {segno}{passo:.2f} °C per decennio",
+                    line=dict(color="#8B5CF6", width=1.8, dash="dash"),
+                    hovertemplate=(
+                        "tendenza · %{y:.2f} °C"
+                        f"<br>R² {retta['r2']:.2f}<extra></extra>"
+                    ),
+                )
+            )
+            valori_y += list(retta["y"])
+            voci += 1
 
     if ultimi_365 is not None:
         valore, fine = ultimi_365
@@ -5283,17 +5342,37 @@ with tab_climate:
                 )
             else:
                 st.write("### Andamento annuale")
-                # Due strati facoltativi sulla sola figura delle temperature:
+                # Tre strati facoltativi sulla sola figura delle temperature:
                 # spenti di default, perché il grafico di base risponde già a
                 # una domanda sua e non deve pagare il prezzo di chi ne ha
                 # un'altra.
-                sovrapp_1, sovrapp_2 = st.columns(2)
+                sovrapp_1, sovrapp_2, sovrapp_3 = st.columns(3)
                 with sovrapp_1:
                     mostra_decenni = st.checkbox(
                         "📐 Medie per decennio",
                         key="era5_annuale_decenni",
                     )
                 with sovrapp_2:
+                    anni_bastano = len(yearly_era5) >= ERA5_ANNI_MINIMI_TENDENZA
+                    mostra_tendenza = st.checkbox(
+                        "📈 Tendenza lineare",
+                        key="era5_annuale_tendenza",
+                        help=(
+                            "Retta dei minimi quadrati sulle medie annue, con "
+                            "la pendenza in °C per decennio. Descrive la serie "
+                            "che c'è, non è una previsione: fuori dagli anni "
+                            "disegnati non vale."
+                        )
+                        if anni_bastano
+                        else (
+                            "Servono almeno "
+                            f"{ERA5_ANNI_MINIMI_TENDENZA} anni completi: su "
+                            "una serie più corta la retta direbbe soprattutto "
+                            "quali anni sono capitati agli estremi."
+                        ),
+                        disabled=not anni_bastano,
+                    )
+                with sovrapp_3:
                     ultimi_365 = era5_media_ultimi_365_giorni()
                     mostra_365 = (
                         st.checkbox(
@@ -5315,6 +5394,7 @@ with tab_climate:
                     build_era5_annual_temperature_figure(
                         yearly_era5,
                         decenni=mostra_decenni,
+                        tendenza=mostra_tendenza,
                         ultimi_365=ultimi_365 if mostra_365 else None,
                     )
                 )

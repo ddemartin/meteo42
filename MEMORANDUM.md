@@ -15,6 +15,45 @@ portava già il suo motivo, la voce lo dice.
 
 ---
 
+## 2026-08-17 — la retta di tendenza sull'andamento annuale, non pesata e con un minimo di anni
+
+Terza casella sull'andamento annuale, spenta di default come le altre due del
+2026-08-15: la **retta dei minimi quadrati** sulle medie annue, tratteggiata,
+con la pendenza scritta in legenda e l'R² nell'hover. Sull'archivio ERA5 di
+oggi (1950-2017) dice **+0,23 °C per decennio, R² 0,45**.
+
+**Lineare e non altro.** Una curva — polinomio, LOESS — descriverebbe meglio i
+punti e direbbe molto meno: la domanda è di quanto si sia scaldato, cioè un
+numero solo, e quel numero è la pendenza. Il rischio della curva è l'opposto di
+quello della retta: la retta si vede subito che è una semplificazione, mentre
+la curva si legge come struttura misurata anche dove è solo rumore
+interpolato.
+
+**Non pesata sulle ore**, a differenza della media del periodo e delle medie
+per decennio. Lì il peso serve perché si sommano ore disuguali dentro un unico
+numero; qui ogni punto è un anno completo e vale quanto gli altri, e il giorno
+in più dei bisestili sposta la pendenza di molto meno di quanto la sposti un
+anno caldo qualunque. Pesare avrebbe dato un'aria di precisione che il dato non
+ha.
+
+**La pendenza per decennio, non per anno né per secolo.** All'anno sono
+centesimi di grado che non si leggono, al secolo è una cifra che nessuno può
+verificare sul grafico; il decennio è anche il passo con cui il resto della
+scheda confronta i periodi.
+
+**Sotto i dieci anni completi la casella è disabilitata**, non nascosta. Su una
+serie corta la retta misura soprattutto quali anni sono capitati agli estremi,
+e il testo d'aiuto lo dice: una casella grigia con la spiegazione insegna
+qualcosa, una casella assente lascia credere a un guasto. Il limite di dieci è
+convenzionale — vale il criterio, non il numero: sull'archivio ERA5 (68 anni)
+non scatta mai, serve a chi ripuntasse la scheda su una serie osservata breve.
+
+**L'R² sta nell'hover e non in legenda.** In legenda ci va ciò che si porta via
+guardando il grafico una volta sola, e quello è la pendenza; l'R² serve a chi
+si chiede quanto la retta stia stretta ai punti, cioè a chi sta già guardando.
+
+---
+
 ## 2026-08-15 — due strati facoltativi sull'andamento annuale, e la finestra mobile che vale quanto un anno solare
 
 Sull'andamento annuale si accendono a casella — **spente di default** — le

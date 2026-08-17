@@ -239,10 +239,13 @@ osservazioni — sta in [MEMORANDUM.md](MEMORANDUM.md) (2026-08-07).
 - Temperatura media e precipitazione annua, ciclo annuale con la banda tra
   l'anno più freddo e il più caldo, ciclo annuale per decennio (dal blu del
   decennio più vecchio al rosso del più recente)
-- Sull'andamento annuale due strati si accendono con una casella, spenti di
+- Sull'andamento annuale tre strati si accendono con una casella, spenti di
   default: le **medie per decennio**, disegnate a scalini perché dentro il
-  decennio c'è un numero solo e non un andamento, e la **media degli ultimi
-  365 giorni** come linea di riferimento accanto a quella del periodo. La
+  decennio c'è un numero solo e non un andamento, la **tendenza lineare**
+  (minimi quadrati sulle medie annue, con la pendenza in °C per decennio nella
+  legenda e l'R² nell'hover; sotto i dieci anni completi la casella è
+  disabilitata), e la **media degli ultimi 365 giorni** come linea di
+  riferimento accanto a quella del periodo. La
   finestra dei 365 giorni è lunga un anno per costruzione, quindi si confronta
   con le medie annue anche quando non coincide con un anno solare
 - I grafici della scheda hanno uno stile comune: linee senza marcatori, tacche
