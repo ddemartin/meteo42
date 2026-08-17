@@ -15,6 +15,67 @@ portava già il suo motivo, la voce lo dice.
 
 ---
 
+## 2026-08-17 — quanto è fredda la tmax ERA5: misurata su dieci anni di Mogliano
+
+Il 2026-08-15, annotando i giorni oltre soglia, si era scritto che «le massime
+di questa serie stanno sotto quelle che avrebbe misurato un termometro in
+loco». Era una deduzione dalla dimensione della cella. Ora è un numero.
+
+Confronto sulle **massime giornaliere**, stazione `300000150` (Mogliano
+Veneto, `TARIA2M`) contro la cella `45,6 N 12,3 E`, sui **3650 giorni completi
+dal 2010-01-01 al 2019-12-31** — cioè tutta la sovrapposizione disponibile
+oggi, con lo storico ARPAV che parte dal 2010 e l'import ERA5 arrivato a fine
+2019. Entrambe le serie sono orarie in quel decennio; ERA5 traslato di `+1 ora`
+e ARPAV riportato alla convenzione «inizio ora» (l'etichetta ARPAV *chiude*
+l'ora: `ORA 01` è la media fra 00 e 01), così i massimi cadono sullo stesso
+giorno civile.
+
+**ERA5 sottostima la tmax di `-1,10 °C` in media**, mediana `-1,30`, MAE
+`1,48`, RMSE `1,75`, correlazione `0,990`. Il segno è quasi sempre lo stesso:
+il 95° percentile dello scarto è `+1,32`, il 5° è `-2,93`.
+
+Lo scarto **non è una costante da sottrarre, cresce col caldo**:
+
+| tmax osservata | scarto medio | giorni |
+|---|---|---|
+| 0-10 °C | `+0,12` | 688 |
+| 10-20 °C | `-0,90` | 1276 |
+| 20-25 °C | `-1,46` | 635 |
+| 25-30 °C | `-1,89` | 629 |
+| 30-35 °C | `-2,06` | 386 |
+| oltre 35 °C | `-2,33` | 29 |
+
+Stessa cosa letta per mese: `-0,28` a gennaio contro `-1,83` a giugno. Per
+anno invece è stabile fra `-0,89` e `-1,28`, senza deriva: è un bias di
+processo, non un cambio di qualità della rianalisi nel tempo.
+
+**La conseguenza pratica sta nei conteggi oltre soglia**, dove un bias che
+cresce proprio dove si conta si amplifica. Sul decennio: sopra 25 °C ARPAV
+1058 giorni contro 833 di ERA5, sopra 30 °C **430 contro 185 — meno della
+metà**, sopra 32 °C 200 contro 71, sopra 35 °C **32 contro zero**. La massima
+assoluta d'anno è sistematicamente più bassa di 2-4 °C (2019: `37,5` osservati,
+`33,6` modellati). Il caveat scritto il 2026-08-15 quindi vale, e vale più di
+quanto sembrasse: con la soglia a 30 °C la serie ERA5 non è una stima
+approssimata del conteggio vero, ne è **meno della metà**. Resta buona per
+confrontare un anno con l'altro, che è l'uso per cui quelle ricette sono state
+scritte.
+
+**Non si applica nessuna correzione.** Un `+1,1 °C` piatto peggiorerebbe i
+giorni freddi (dove il bias è nullo o positivo) e resterebbe insufficiente sui
+giorni caldi; una correzione dipendente dalla temperatura sarebbe tarata su
+dieci anni di *una* cella e verrebbe poi applicata a settantasei, comprese le
+decadi in cui non c'è niente con cui verificarla. Il difetto documentato e
+visibile vale più di un numero aggiustato che nasconde la sua origine.
+
+**Le medie giornaliere, per contrasto, non hanno questo problema**: bias
+`-0,02 °C`, MAE `0,73`, sugli stessi 3650 giorni. Il che conferma da dove viene
+lo scarto sulle massime — la media su 9 km smorza il picco del pomeriggio, non
+sposta il livello della serie. Coerente con la verifica oraria su ottobre 2015
+annotata il 2026-08-10 (bias `+0,46`, MAE `0,98`), che infatti misurava tutte
+le ore insieme e non i soli massimi.
+
+---
+
 ## 2026-08-17 — la retta di tendenza sull'andamento annuale, non pesata e con un minimo di anni
 
 Terza casella sull'andamento annuale, spenta di default come le altre due del
@@ -1107,6 +1168,25 @@ correttamente al lunedì. Sotto il campo c'è la data per esteso in italiano, ch
 
 - ✅ **`raw_json`** — chiusa il 2026-08-07 con i numeri: 582 MB, mai letta, via.
   Vedi la voce di quel giorno.
+- **Una taratura di ERA5 sul termometro regge?** Aperta il 2026-08-17 con la
+  misura sulle tmax (`-1,10 °C`, ma da `+0,12` a `-2,33` a seconda del caldo).
+  Si riprende **a scaricamento finito**, quando la sovrapposizione con lo
+  storico ARPAV arriverà a circa vent'anni invece dei dieci di oggi, e si
+  ripete su **tmin e tmedia**: la tmedia è già in accordo (bias `-0,02`), la
+  tmin non è mai stata guardata e non c'è motivo di aspettarsi lo stesso segno
+  della tmax — se lì il bias fosse positivo, sarebbe la conferma che la cella
+  smorza l'escursione invece di spostare il livello, e la correzione
+  giusta agirebbe sull'ampiezza, non sui due estremi separatamente.
+
+  La voce del 2026-08-17 rifiuta una correzione *piatta*: quella resta
+  rifiutata. Qui la domanda è diversa — se una relazione dipendente dalla
+  temperatura (e forse dalla stagione) sia abbastanza stabile da valere come
+  taratura. Il criterio per rispondere sì non è la bontà dell'adattamento sui
+  dati con cui la si costruisce: servono **anni tenuti fuori dalla stima**, e
+  la correzione vale solo se sui quelli riduce davvero MAE e conteggi oltre
+  soglia. Altrimenti si è misurato il rumore di un decennio e lo si è scritto
+  addosso a settantasei anni, la maggior parte dei quali non ha niente con cui
+  smentirlo.
 - **La crescita del DB, con le 14 storie che stanno arrivando.** Oggi 457 MiB,
   costo misurato **218 byte per riga** tabella e indici compresi. La storia di
   Mogliano è 1,91 M di righe: se le altre 14 stazioni portano storie
